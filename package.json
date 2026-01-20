@@ -1,0 +1,14 @@
+{
+    "name": "skisplace-monorepo",
+    "private": true,
+    "scripts": {
+        "lint:python": "cd services/api && ruff check . && black --check . && cd ../worker && ruff check . && black --check .",
+        "lint:ts": "cd apps/dashboard && npm run lint",
+        "lint": "npm run lint:python && npm run lint:ts",
+        "format:python": "cd services/api && black . && cd ../worker && black .",
+        "format:ts": "cd apps/dashboard && npm run format",
+        "format": "npm run format:python && npm run format:ts",
+        "test:smoke": "echo 'Running Smoke Tests...' && npm run lint",
+        "ci": "npm run lint"
+    }
+}

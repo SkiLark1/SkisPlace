@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SkisPlace Widget Test</title>
+</head>
+
+<body>
+  <h1>Host Application</h1>
+  <p>This mimics a client website embedding the widget.</p>
+
+  <!-- The Mount Point -->
+  <div id="skisplace-widget"></div>
+
+  <!-- The Widget Script (Vite injects main.ts, we simulate attributes via a creating a fake script tag or just handling it in main.ts for dev) -->
+  <!-- For local dev with Vite, we can't easily put data-attrs on the entry point script. 
+         So we'll create a dummy script tag for the code to find, OR we'll fallback to defaults in main.ts -->
+  <script id="skisplace-config" data-api-key="YOUR_API_KEY_HERE" data-project-id="YOUR_PROJECT_ID_HERE">
+  </script>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+
+</html>

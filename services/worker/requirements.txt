@@ -1,0 +1,6 @@
+redis==5.0.1
+python-dotenv==1.0.1
+requests==2.31.0
+ruff==0.1.13
+black==23.12.1
+
