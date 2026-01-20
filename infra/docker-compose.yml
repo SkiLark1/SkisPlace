@@ -65,11 +65,12 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - WATCHPACK_POLLING=true
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+      # Use Docker internal network hostname for API
+      - NEXT_PUBLIC_API_URL=http://api:8000/api/v1
     volumes:
       - ../apps/dashboard:/app
       - /app/node_modules
+      - /app/.next
     depends_on:
       - api
 
