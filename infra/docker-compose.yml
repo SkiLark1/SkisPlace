@@ -65,8 +65,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # Use Docker internal network hostname for API
-      - NEXT_PUBLIC_API_URL=http://api:8000/api/v1
+      # Browser needs localhost since NEXT_PUBLIC_ vars are client-side
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
     volumes:
       - ../apps/dashboard:/app
       - /app/node_modules
