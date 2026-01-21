@@ -56,10 +56,16 @@ def get_widget_js():
     var projectId = myScript.getAttribute('data-project-id');
     var modules = myScript.getAttribute('data-modules');
     
-    console.log("SkisPlace Widget: Config Found", { apiKey, projectId, modules });
+    // Derive API Base URL from script src
+    // Expecting src like ".../api/v1/public/widget.js"
+    // We want ".../api/v1/public/validate"
+    var src = myScript.src;
+    var baseUrl = src.substring(0, src.lastIndexOf('/')); // removes 'widget.js'
+    
+    console.log("SkisPlace Widget: Config Found", { apiKey, projectId, modules, baseUrl });
     
     // Test Connection
-    fetch('http://localhost:8000/api/v1/public/validate', {
+    fetch(baseUrl + '/validate', {
         headers: {
             'X-API-KEY': apiKey
         }
@@ -81,3 +87,17 @@ def get_widget_js():
     """
     from fastapi.responses import Response
     return Response(content=js_content, media_type="application/javascript")
+
+@router.post("/render")
+def render_preview(
+    project: Project = Depends(deps.verify_public_origin),
+    # body: dict = Body(...) # In real app we'd declare a schema
+):
+    """
+    Stub endpoint for rendering.
+    """
+    # Simulate processing delay if we wanted, but immediate is fine for MVP.
+    return {
+        "status": "success",
+        "result_url": "https://images.unsplash.com/photo-1516455590571-18256e5bb9ff?ixlib=rb-4.0.3&auto=format&fit=crop&w=1000&q=80" # Placeholder epoxy floor image
+    }

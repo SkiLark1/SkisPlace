@@ -52,6 +52,21 @@ async def seed_data():
             {"name": "seo-monitor", "description": "SEO Monitoring"},
             {"name": "uptime", "description": "Uptime Monitoring"},
             {"name": "analytics", "description": "Usage Analytics"},
+            {
+                "name": "Epoxy Visualizer", 
+                "description": "Upload a room photo and preview epoxy finishes",
+                "default_config": {"theme": "light", "maxRendersPerDay": 50}
+            },
+            {
+                "name": "Hello Widget",
+                "description": "A simple hello world widget for testing",
+                "default_config": {}
+            },
+            {
+                "name": "Lead Capture",
+                "description": "Capture leads from your website",
+                "default_config": {"email_notifications": True},
+            }
         ]
         
         for mod_data in modules:
@@ -59,6 +74,44 @@ async def seed_data():
             if not result.scalar_one_or_none():
                 print(f"Creating module: {mod_data['name']}")
                 session.add(Module(**mod_data))
+
+        await session.commit()
+        
+        # Seed Epoxy Styles
+        from app.models import EpoxyStyle
+        
+        styles = [
+            {
+                "name": "Metallic Marble", 
+                "category": "Metallic", 
+                "is_system": True,
+                "parameters": {"color": "#C0C0C0"},
+                "texture_maps": {},
+                "cover_image_id": None 
+            },
+            {
+                "name": "Midnight Sparkle", 
+                "category": "Flake", 
+                "is_system": True,
+                "parameters": {"density": "high"},
+                "texture_maps": {},
+                "cover_image_id": None
+            },
+             {
+                "name": "Industrial Grey", 
+                "category": "Solid", 
+                "is_system": True,
+                "parameters": {"finish": "matte"},
+                "texture_maps": {},
+                "cover_image_id": None
+            }
+        ]
+        
+        for style_data in styles:
+             result = await session.execute(select(EpoxyStyle).where(EpoxyStyle.name == style_data["name"]))
+             if not result.scalar_one_or_none():
+                 print(f"Creating style: {style_data['name']}")
+                 session.add(EpoxyStyle(**style_data))
 
         await session.commit()
         print("Seeding complete.")

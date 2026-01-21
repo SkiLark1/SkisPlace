@@ -1,5 +1,11 @@
 import './style.css'
 
+interface EpoxyStyle {
+  id: string
+  name: string
+  cover_image_url?: string
+}
+
 async function initWidget() {
   const container = document.getElementById('skisplace-widget');
   if (!container) {
@@ -7,82 +13,253 @@ async function initWidget() {
     return;
   }
 
-  // 1. Get Config
-  // In production, we look for the script tag that loaded us (document.currentScript doesn't work with module/defer easily in all browsers, 
-  // but often we search by src or use a known ID).
-  // For this "Hello Widget", we'll look for:
-  // A) A script with id "skisplace-config" (dev/test helper)
-  // B) The script src containing "widget.js" (prod pattern)
-
+  // --- 1. Config & API ---
+  let apiBase: string | null = null;
   let apiKey: string | null = null;
 
   const configScript = document.getElementById('skisplace-config');
   if (configScript) {
+    apiBase = configScript.getAttribute('data-api-base');
     apiKey = configScript.getAttribute('data-api-key');
-  } else {
-    // Search tags
+  }
+
+  // Script tag fallback/discovery
+  let scriptEl: HTMLScriptElement | null = configScript as HTMLScriptElement;
+  if (!scriptEl) {
     const scripts = document.querySelectorAll('script');
     for (const s of scripts) {
       if (s.src && s.src.includes('widget.js')) {
-        apiKey = s.getAttribute('data-api-key');
+        scriptEl = s;
         break;
       }
     }
   }
+
+  if (scriptEl) {
+    if (!apiKey) apiKey = scriptEl.getAttribute('data-api-key');
+    if (!apiBase) apiBase = scriptEl.getAttribute('data-api-base');
+  }
+
+  const API_BASE = apiBase || 'http://localhost:8000/api/v1';
 
   if (!apiKey) {
     container.innerHTML = `<div class="sp-error">Configuration missing (API Key)</div>`;
     return;
   }
 
-  container.innerHTML = `<div class="sp-loading">Connecting to SkisPlace...</div>`;
+  // --- 2. State & Render ---
+  let state = {
+    step: 'upload' as 'upload' | 'styles' | 'rendering' | 'result',
+    uploadedImage: null as File | null,
+    uploadedImageUrl: null as string | null,
+    styles: [] as EpoxyStyle[],
+    selectedStyleId: null as string | null,
+    resultUrl: null as string | null,
+    error: null as string | null
+  };
 
-  // 2. Ping API
-  // Note: During local dev `npm run dev`, localhost:5173 -> localhost:8000 might have CORS issues 
-  // if not handled. The API allows "*" or specific domains. 
-  // We verified API allows based on Origin header. 
-  // Vite dev server origin is usually http://localhost:5173.
-  // We need to make sure http://localhost:5173 is allowed in the Project Domains, OR the API allows it by default/open mode (which it does if no domains set).
+  async function render() {
+    // Clear container
+    container!.innerHTML = '<div class="sp-box"></div>';
+    const box = container!.querySelector('.sp-box')!;
 
-  const API_URL = 'http://localhost:8000/api/v1/public/ping';
+    // Header
+    const header = document.createElement('div');
+    header.className = 'sp-header';
+    header.innerHTML = `<h3>Epoxy Visualizer</h3>`;
+    box.appendChild(header);
 
-  try {
-    const res = await fetch(API_URL, {
-      method: 'GET',
-      headers: {
-        'X-API-KEY': apiKey
-      }
-    });
+    // Content Body
+    const content = document.createElement('div');
+    content.className = 'sp-content-body';
+    box.appendChild(content);
 
-    if (!res.ok) {
-      throw new Error(`Status ${res.status}`);
+    // Error Overlay
+    if (state.error) {
+      content.innerHTML = `<div class="sp-error-msg">${state.error}</div>`;
+      const btn = document.createElement('button');
+      btn.className = 'sp-btn secondary';
+      btn.innerText = 'Try Again';
+      btn.onclick = () => { state.error = null; state.step = 'upload'; render(); };
+      content.appendChild(btn);
+      return;
     }
 
-    const data = await res.json();
-
-    // 3. Render Success
-    container.innerHTML = `
-      <div class="sp-box">
-        <div class="sp-status is-connected"></div>
-        <div class="sp-content">
-          <h3>Connected</h3>
-          <p>Project: <strong>${data.project}</strong></p>
+    if (state.step === 'upload') {
+      content.innerHTML = `
+        <div class="sp-upload-zone">
+          <p>Take a photo of your room or upload one to get started.</p>
+          <input type="file" id="sp-file-input" accept="image/*" />
+          <label for="sp-file-input" class="sp-btn primary">Select Photo</label>
         </div>
-      </div>
-    `;
+      `;
+      const input = content.querySelector('#sp-file-input') as HTMLInputElement;
+      input.onchange = (e: any) => {
+        if (e.target.files && e.target.files[0]) {
+          state.uploadedImage = e.target.files[0];
+          state.uploadedImageUrl = URL.createObjectURL(e.target.files[0]);
+          state.step = 'styles';
+          loadStyles(); // Trigger style load
+        }
+      };
+    }
+    else if (state.step === 'styles') {
+      // Preview
+      if (state.uploadedImageUrl) {
+        const preview = document.createElement('img');
+        preview.src = state.uploadedImageUrl;
+        preview.className = 'sp-mini-preview';
+        content.appendChild(preview);
+      }
 
-  } catch (err) {
-    console.error(err);
-    container.innerHTML = `
-      <div class="sp-box error">
-        <div class="sp-status is-error"></div>
-        <div class="sp-content">
-          <h3>Connection Failed</h3>
-          <p>Could not reach SkisPlace API.</p>
-        </div>
-      </div>
-    `;
+      const title = document.createElement('h4');
+      title.innerText = 'Choose a Style';
+      content.appendChild(title);
+
+      if (state.styles.length === 0) {
+        content.innerHTML += `<div class="sp-loading-sm">Loading styles...</div>`;
+      } else {
+        const grid = document.createElement('div');
+        grid.className = 'sp-style-grid';
+        state.styles.forEach(style => {
+          const card = document.createElement('div');
+          card.className = `sp-style-card ${state.selectedStyleId === style.id ? 'selected' : ''}`;
+          card.onclick = () => selectStyle(style.id);
+
+          if (style.cover_image_url) {
+            const img = document.createElement('img');
+            img.src = style.cover_image_url;
+            card.appendChild(img);
+          } else {
+            card.innerHTML = `<div class="sp-no-img"></div>`;
+          }
+          const name = document.createElement('div');
+          name.className = 'sp-style-name';
+          name.innerText = style.name;
+          card.appendChild(name);
+          grid.appendChild(card);
+        });
+        content.appendChild(grid);
+      }
+
+      // Actions
+      const actions = document.createElement('div');
+      actions.className = 'sp-actions';
+
+      const backBtn = document.createElement('button');
+      backBtn.className = 'sp-btn text';
+      backBtn.innerText = 'Back';
+      backBtn.onclick = () => { state.step = 'upload'; state.selectedStyleId = null; render(); };
+      actions.appendChild(backBtn);
+
+      const nextBtn = document.createElement('button');
+      nextBtn.className = 'sp-btn primary';
+      nextBtn.disabled = !state.selectedStyleId;
+      nextBtn.innerText = 'Visualize';
+      nextBtn.onclick = performRender;
+      actions.appendChild(nextBtn);
+
+      content.appendChild(actions);
+    }
+    else if (state.step === 'rendering') {
+      content.innerHTML = `
+           <div class="sp-loading-container">
+             <div class="sp-spinner"></div>
+             <p>Generating preview...</p>
+           </div>
+        `;
+    }
+    else if (state.step === 'result') {
+      content.innerHTML = `
+          <div class="sp-result-container">
+             <div class="sp-img-compare">
+                <img src="${state.resultUrl}" class="sp-result-img" />
+                <span class="sp-label">After</span>
+             </div>
+             <div class="sp-mini-orig">
+                <span class="sp-label-sm">Original</span>
+                <img src="${state.uploadedImageUrl}" />
+             </div>
+          </div>
+        `;
+      const actions = document.createElement('div');
+      actions.className = 'sp-actions';
+
+      const resetBtn = document.createElement('button');
+      resetBtn.className = 'sp-btn secondary';
+      resetBtn.innerText = 'Start Over';
+      resetBtn.onclick = () => {
+        state.step = 'upload';
+        state.selectedStyleId = null;
+        state.uploadedImage = null;
+        render();
+      };
+      actions.appendChild(resetBtn);
+      content.appendChild(actions);
+    }
   }
+
+  // --- Logic ---
+
+  async function loadStyles() {
+    render(); // Show loading state inside styles step
+    try {
+      const res = await fetch(`${API_BASE}/styles/public`, {
+        headers: { 'X-API-KEY': apiKey! }
+      });
+      if (res.ok) {
+        state.styles = await res.json();
+      } else {
+        console.error('Failed to load styles', res.status);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    render();
+  }
+
+  function selectStyle(id: string) {
+    state.selectedStyleId = id;
+    render();
+  }
+
+  async function performRender() {
+    state.step = 'rendering';
+    render();
+
+    try {
+      const formData = new FormData();
+      if (state.uploadedImage) {
+        formData.append('image', state.uploadedImage);
+      }
+      if (state.selectedStyleId) {
+        formData.append('style_id', state.selectedStyleId);
+      }
+
+      // Call /epoxy/preview
+      const res = await fetch(`${API_BASE}/epoxy/preview`, {
+        method: 'POST',
+        headers: {
+          'X-API-KEY': apiKey!
+        },
+        body: formData
+      });
+
+      if (!res.ok) throw new Error('Render failed');
+      const data = await res.json();
+
+      state.resultUrl = data.result_url;
+      state.step = 'result';
+
+    } catch (e: any) {
+      console.error(e);
+      state.error = e.message || 'Error generating preview';
+    }
+    render();
+  }
+
+  // Initial Render
+  render();
 }
 
 initWidget();
