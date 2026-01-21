@@ -253,3 +253,51 @@ input[type="file"] {
   text-align: center;
   font-size: 14px;
 }
+
+/* Result Toggle & Main Image */
+.sp-view-toggle {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  background: #f9fafb;
+  border-bottom: 1px solid var(--sp-border);
+}
+
+.sp-toggle-btn {
+  background: white;
+  border: 1px solid var(--sp-border);
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--sp-text);
+  transition: all 0.2s;
+}
+
+.sp-toggle-btn:hover {
+  background: #f3f4f6;
+}
+
+.sp-toggle-btn.active {
+  background: var(--sp-primary);
+  color: white;
+  border-color: var(--sp-primary);
+}
+
+.sp-img-display {
+  width: 100%;
+  background: #111;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  min-height: 300px;
+}
+
+.sp-main-img {
+  max-width: 100%;
+  max-height: 600px;
+  object-fit: contain;
+  display: block;
+}

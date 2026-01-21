@@ -48,6 +48,8 @@ async function initWidget() {
   }
 
   // --- 2. State & Render ---
+  let uploadedImageId: string | null = null;
+
   let state = {
     step: 'upload' as 'upload' | 'styles' | 'rendering' | 'result',
     uploadedImage: null as File | null,
@@ -94,12 +96,43 @@ async function initWidget() {
         </div>
       `;
       const input = content.querySelector('#sp-file-input') as HTMLInputElement;
-      input.onchange = (e: any) => {
+      input.onchange = async (e: any) => {
         if (e.target.files && e.target.files[0]) {
-          state.uploadedImage = e.target.files[0];
-          state.uploadedImageUrl = URL.createObjectURL(e.target.files[0]);
-          state.step = 'styles';
-          loadStyles(); // Trigger style load
+          const file = e.target.files[0];
+          state.uploadedImage = file;
+          state.uploadedImageUrl = URL.createObjectURL(file);
+
+          // Trigger Upload API
+          try {
+            const upData = new FormData();
+            upData.append('file', file);
+
+            // Optimistic move to styles while uploading in background? 
+            // Or block? Let's block for MVP safety or add a loading spinner.
+            // For now, let's just fire it and hope it finishes before they click "Visualize".
+            // Better: move to styles, but disable "Visualize" until upload done.
+            state.step = 'styles';
+            loadStyles();
+
+            const res = await fetch(`${API_BASE}/epoxy/uploads`, {
+              method: 'POST',
+              headers: { 'X-API-KEY': apiKey! },
+              body: upData
+            });
+            if (res.ok) {
+              const data = await res.json();
+              uploadedImageId = data.id; // Store globally or in state
+              console.log('Upload complete:', uploadedImageId);
+            } else {
+              console.error('Upload failed');
+              state.error = 'Upload failed';
+              render();
+            }
+
+          } catch (err) {
+            console.error(err);
+            state.error = 'Upload failed';
+          }
         }
       };
     }
@@ -172,16 +205,35 @@ async function initWidget() {
     else if (state.step === 'result') {
       content.innerHTML = `
           <div class="sp-result-container">
-             <div class="sp-img-compare">
-                <img src="${state.resultUrl}" class="sp-result-img" />
-                <span class="sp-label">After</span>
+             <div class="sp-view-toggle">
+               <button class="sp-toggle-btn active" data-view="preview">Preview</button>
+               <button class="sp-toggle-btn" data-view="original">Original</button>
              </div>
-             <div class="sp-mini-orig">
-                <span class="sp-label-sm">Original</span>
-                <img src="${state.uploadedImageUrl}" />
+             
+             <div class="sp-img-display">
+                <img src="${state.resultUrl}" class="sp-main-img" id="sp-result-img" />
              </div>
           </div>
         `;
+
+      // Toggle Logic
+      const imgEl = content.querySelector('#sp-result-img') as HTMLImageElement;
+      const btns = content.querySelectorAll('.sp-toggle-btn');
+
+      btns.forEach(btn => {
+        (btn as HTMLButtonElement).onclick = () => {
+          btns.forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+
+          const view = (btn as HTMLButtonElement).dataset.view;
+          if (view === 'original') {
+            imgEl.src = state.uploadedImageUrl!;
+          } else {
+            imgEl.src = state.resultUrl!;
+          }
+        };
+      });
+
       const actions = document.createElement('div');
       actions.className = 'sp-actions';
 
@@ -194,7 +246,16 @@ async function initWidget() {
         state.uploadedImage = null;
         render();
       };
+
+      const downloadBtn = document.createElement('a');
+      downloadBtn.className = 'sp-btn primary';
+      downloadBtn.innerText = 'Download';
+      downloadBtn.href = state.resultUrl!;
+      downloadBtn.download = 'epoxy_preview.jpg';
+      downloadBtn.target = '_blank';
+
       actions.appendChild(resetBtn);
+      actions.appendChild(downloadBtn);
       content.appendChild(actions);
     }
   }
@@ -229,9 +290,12 @@ async function initWidget() {
 
     try {
       const formData = new FormData();
-      if (state.uploadedImage) {
-        formData.append('image', state.uploadedImage);
+      if (uploadedImageId) {
+        formData.append('image_id', uploadedImageId);
+      } else {
+        throw new Error("Upload incomplete. Please wait.");
       }
+
       if (state.selectedStyleId) {
         formData.append('style_id', state.selectedStyleId);
       }
