@@ -345,17 +345,12 @@ async def enable_project_module(
     result = await db.execute(query)
     return result.scalars().first()
 
-@router.patch("/{project_id}/modules/{module_id}", response_model=ProjectModuleResponse)
+@router.patch("/{project_id}/modules/{system_module_id}", response_model=ProjectModuleResponse)
 async def update_project_module(
     *,
     db: AsyncSession = Depends(deps.get_db),
     project_id: UUID,
-    module_id: UUID, # This is the PROJECT_MODULE id, or the SYSTEM_MODULE id?
-                     # Ideally it should be the ID of the resource we are manipulating in URL.
-                     # But frontend might trigger by "Enable Module X". 
-                     # Let us assume this is the SYSTEM MODULE ID for convenience if the user wants "Toggle Module X".
-                     # Actually, standard REST: /resources/{id}. If resource is "project_module", id is pm.id.
-                     # However, keeping it simple: let use module_id refer to SYSTEM MODULE ID for semantic clarity "Toggle SeoMonitor".
+    system_module_id: UUID, 
     module_update: ProjectModuleUpdate,
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
@@ -364,7 +359,7 @@ async def update_project_module(
     """
     query = select(ProjectModule).where(
         ProjectModule.project_id == project_id,
-        ProjectModule.module_id == module_id
+        ProjectModule.module_id == system_module_id
     )
     result = await db.execute(query)
     pm = result.scalars().first()
@@ -385,12 +380,12 @@ async def update_project_module(
     result = await db.execute(query)
     return result.scalars().first()
 
-@router.delete("/{project_id}/modules/{module_id}", response_model=ProjectModuleResponse)
+@router.delete("/{project_id}/modules/{system_module_id}", response_model=ProjectModuleResponse)
 async def disable_project_module(
     *,
     db: AsyncSession = Depends(deps.get_db),
     project_id: UUID,
-    module_id: UUID, # System Module ID
+    system_module_id: UUID, # System Module ID
     current_user: User = Depends(deps.get_current_user),
 ) -> Any:
     """
@@ -398,7 +393,7 @@ async def disable_project_module(
     """
     query = select(ProjectModule).where(
         ProjectModule.project_id == project_id,
-        ProjectModule.module_id == module_id
+        ProjectModule.module_id == system_module_id
     ).options(selectinload(ProjectModule.module))
     
     result = await db.execute(query)

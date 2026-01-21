@@ -1,4 +1,5 @@
-from sqlalchemy import String, ForeignKey, Boolean, JSON
+from sqlalchemy import String, ForeignKey, Boolean, JSON, DateTime, func
+from datetime import datetime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import uuid
 from ..db.base import Base
@@ -10,6 +11,7 @@ class Module(Base):
     name: Mapped[str] = mapped_column(String, unique=True)
     description: Mapped[str] = mapped_column(String)
     default_config: Mapped[dict] = mapped_column(JSON, default={})
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class ProjectModule(Base):
     __tablename__ = "project_modules"

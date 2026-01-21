@@ -26,6 +26,14 @@ app.mount("/static/uploads", StaticFiles(directory="static/uploads"), name="stat
 def health():
     return {"status": "ok", "service": "api"}
 
+@app.on_event("startup")
+async def startup_event():
+    from app.db.session import AsyncSessionLocal
+    from app.db.init_db import init_db
+    
+    async with AsyncSessionLocal() as db:
+        await init_db(db)
+
 @app.get("/")
 def root():
     return {"message": "API is running"}

@@ -15,14 +15,14 @@ router = APIRouter()
 @router.get("/", response_model=List[ModuleResponse])
 async def read_modules(
     db: AsyncSession = Depends(deps.get_db),
-    current_user: User = Depends(deps.get_current_user),
+    current_user: User = Depends(deps.get_current_active_superuser),
     skip: int = 0,
     limit: int = 100,
 ) -> Any:
     """
     Retrieve system modules.
     """
-    query = select(Module).offset(skip).limit(limit)
+    query = select(Module).order_by(Module.name).offset(skip).limit(limit)
     result = await db.execute(query)
     modules = result.scalars().all()
     return modules
