@@ -1,7 +1,7 @@
 import os
 from PIL import Image, ImageEnhance, ImageOps, ImageDraw
 
-def process_image(input_path: str, output_path: str, parameters: dict):
+def process_image(input_path: str, output_path: str, parameters: dict, debug: bool = False) -> dict:
     """
     Process the image to apply a simulated epoxy finish.
     
@@ -9,13 +9,20 @@ def process_image(input_path: str, output_path: str, parameters: dict):
         input_path: Path to source image.
         output_path: Path to save result.
         parameters: Style parameters (e.g., {'color': '#C0C0C0', 'finish': 'gloss'}).
+        debug: If True, saves intermediate assets (like mask) and returns their paths.
+        
+    Returns:
+        dict: {"success": bool, "mask_filename": str|None, "message": str}
     """
+    result_info = {"success": False, "mask_filename": None, "message": ""}
+
     # 1. Load Image
     try:
         original = Image.open(input_path).convert("RGBA")
     except Exception as e:
         print(f"Error opening image: {e}")
-        return False
+        result_info["message"] = f"Error opening image: {e}"
+        return result_info
         
     width, height = original.size
     
@@ -55,6 +62,18 @@ def process_image(input_path: str, output_path: str, parameters: dict):
 
     # B. Gaussian Blur to soften all edges
     mask = mask.filter(ImageFilter.GaussianBlur(radius=5))
+    
+    # DEBUG: Save mask if requested
+    if debug:
+        try:
+            # Create a unique name for the mask
+            import uuid
+            mask_filename = f"mask_{uuid.uuid4()}.png"
+            mask_path = os.path.join(os.path.dirname(output_path), mask_filename)
+            mask.save(mask_path)
+            result_info["mask_filename"] = mask_filename
+        except Exception as e:
+            print(f"Failed to save debug mask: {e}")
         
     # 3. Create Lighting-Aware Epoxy Texture
     color_hex = parameters.get("color", "#a1a1aa") # Default Metallic Grey
@@ -87,4 +106,6 @@ def process_image(input_path: str, output_path: str, parameters: dict):
     # 5. Save
     # Convert back to RGB to save as JPG
     result.convert("RGB").save(output_path, quality=85)
-    return True
+    
+    result_info["success"] = True
+    return result_info

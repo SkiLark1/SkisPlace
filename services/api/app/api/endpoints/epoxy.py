@@ -32,6 +32,7 @@ class UploadResponse(BaseModel):
 class PreviewResponse(BaseModel):
     status: str
     result_url: str
+    mask_url: str | None = None
 
 # --- Endpoints ---
 
@@ -80,13 +81,28 @@ async def upload_image(
 async def create_preview_job(
     request: Request,
     image_id: str = Form(...),
-    style_id: str = Form(...)
+    style_id: str = Form(...),
+    debug: bool = Form(False),
+    db: AsyncSession = Depends(deps.get_db),
 ):
     """
     Request a preview render.
     Currently assumes the 'image_id' corresponds to a file named {image_id}.* in uploads.
     """
     try:
+        # 0. Fetch Style
+        try:
+            uuid_obj = uuid.UUID(style_id)
+        except ValueError:
+             return JSONResponse(status_code=400, content={"status": "error", "message": "Invalid style_id format"})
+
+        query = select(EpoxyStyle).where(EpoxyStyle.id == uuid_obj)
+        result = await db.execute(query)
+        style = result.scalar_one_or_none()
+
+        if not style:
+             return JSONResponse(status_code=404, content={"status": "error", "message": "Style not found"})
+
         # 1. Resolve Image Path (Check if exists)
         # Check if dir exists first
         if not os.path.exists(UPLOAD_DIR):
@@ -117,25 +133,38 @@ async def create_preview_job(
             process_success = False
             
             # Params for engine
-            params = {"color": "#a1a1aa"} 
+            params = style.parameters if style.parameters else {}
+            if "color" not in params:
+                 params["color"] = "#a1a1aa" 
 
-            from app.core.engine import process_image
-            process_success = process_image(input_path, output_path, params)
+            # Call engine with debug flag
+            result = process_image(input_path, output_path, params, debug=debug)
+            
+            # Handle result dict
+            process_success = result.get("success", False)
             print(f"DEBUG: Process Success: {process_success}")
                  
             base_url = str(request.base_url).rstrip("/")
+            result_url = ""
+            mask_url = None
+            
             if process_success:
                  result_url = f"{base_url}/static/uploads/{output_filename}"
+                 if debug and result.get("mask_filename"):
+                     mask_url = f"{base_url}/static/uploads/{result['mask_filename']}"
             else:
                  # Fallback to original
                  result_url = f"{base_url}/static/uploads/{found_file}"
+                 if result.get("message"):
+                     print(f"DEBUG: Processing Error: {result['message']}")
                  
         else:
              return JSONResponse(status_code=404, content={"status": "error", "message": "Image not found"})
 
         return PreviewResponse(
             status="success",
-            result_url=result_url
+            result_url=result_url,
+            mask_url=mask_url
         )
 
     except Exception as e:
