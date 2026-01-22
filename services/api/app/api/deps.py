@@ -66,10 +66,41 @@ async def get_project_from_api_key(
 ) -> Project:
     """
     Validate API Key and return associated project.
+    Accepts either a raw API Key hash (standard) or a signed Preview Token (JWT).
     """
     if not x_api_key:
         raise HTTPException(status_code=401, detail="Missing X-API-KEY header")
 
+    # Check for Preview Token (JWT)
+    if "." in x_api_key:
+        try:
+            payload = jwt.decode(
+                x_api_key, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+            )
+            # Verify usage format
+            if payload.get("type") != "preview":
+                raise HTTPException(status_code=401, detail="Invalid token type")
+            
+            project_id = payload.get("sub")
+            if not project_id:
+                raise HTTPException(status_code=401, detail="Invalid token payload")
+
+            # Fetch Project
+            result = await db.execute(select(Project).where(Project.id == project_id).options(selectinload(Project.domains)))
+            project = result.scalar_one_or_none()
+            
+            if not project:
+                raise HTTPException(status_code=401, detail="Project not found from token")
+                
+            return project
+
+        except (JWTError, ValidationError):
+            # Fallthrough to hash check? No, if it looks like JWT but fails, it's invalid.
+            # But technically a raw key *could* have a dot (unlikely with our format).
+            # Our keys are sk_live_... no dots.
+            raise HTTPException(status_code=401, detail="Invalid Preview Token")
+
+    # Standard API Key Hash Check
     hashed = hash_api_key(x_api_key)
     
     # Query Key + Project + Domains

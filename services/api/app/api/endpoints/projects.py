@@ -129,7 +129,49 @@ async def update_project(
     db.add(project)
     await db.commit()
     await db.refresh(project)
+    db.add(project)
+    await db.commit()
+    await db.refresh(project)
     return project
+
+from datetime import datetime, timedelta
+from jose import jwt
+from app.core.config import settings
+
+@router.get("/{project_id}/preview-token")
+async def get_preview_token(
+    *,
+    db: AsyncSession = Depends(deps.get_db),
+    project_id: UUID,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """
+    Generate a short-lived preview token for testing.
+    """
+    # Verify project exists
+    query = select(Project).where(Project.id == project_id)
+    result = await db.execute(query)
+    project = result.scalars().first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Access Control: Ensure user has access (for now just logged in, consistent with other endpoints)
+    
+    expires_delta = timedelta(minutes=10)
+    expire = datetime.utcnow() + expires_delta
+    
+    to_encode = {
+        "sub": str(project_id),
+        "type": "preview",
+        "exp": expire
+    }
+    
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    
+    return {
+        "token": encoded_jwt,
+        "expires_at": expire
+    }
 
 # --- Domains ---
 
