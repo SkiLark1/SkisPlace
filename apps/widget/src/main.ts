@@ -336,16 +336,21 @@ async function initWidget() {
     state.loadingStyles = true;
     render();
     try {
-      const res = await fetch(`${API_BASE}/styles/public`, {
+      const res = await fetch(`${API_BASE}/epoxy/styles/public`, {
         headers: { 'X-API-KEY': apiKey! }
       });
       if (res.ok) {
         state.styles = await res.json();
+      } else if (res.status === 401) {
+        console.error('Failed to load styles: 401 Unauthorized');
+        state.error = 'Preview token expired — please reopen from dashboard';
       } else {
         console.error('Failed to load styles', res.status);
+        state.error = `Failed to load styles (${res.status})`;
       }
     } catch (e) {
       console.error(e);
+      state.error = 'Network error loading styles';
     } finally {
       state.loadingStyles = false;
       render();

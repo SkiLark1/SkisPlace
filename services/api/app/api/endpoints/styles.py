@@ -113,36 +113,8 @@ async def list_styles(
     
     return [_map_to_response(s) for s in styles]
 
-@router.get("/public", response_model=List[EpoxyStyleResponse])
-async def list_public_styles(
-    db: AsyncSession = Depends(deps.get_db),
-    project: Any = Depends(deps.verify_public_origin), # Enforce API Key
-    debug: bool = False
-):
-    """
-    Publicly accessible styles for the visualizer.
-    Returns Project Styles if they exist; otherwise returns System Styles.
-    """
-    # 1. Try to get Project Styles
-    query = select(EpoxyStyle).where(
-        EpoxyStyle.project_id == project.id
-    ).options(selectinload(EpoxyStyle.cover_image))
-    
-    result = await db.execute(query)
-    project_styles = result.scalars().all()
-    
-    if project_styles:
-        return [_map_to_response(s) for s in project_styles]
-        
-    # 2. Fallback to System Styles
-    query_sys = select(EpoxyStyle).where(
-        EpoxyStyle.is_system == True
-    ).options(selectinload(EpoxyStyle.cover_image))
-    
-    result_sys = await db.execute(query_sys)
-    system_styles = result_sys.scalars().all()
-    
-    return [_map_to_response(s) for s in system_styles]
+# NOTE: Public styles endpoint moved to /epoxy/styles/public (epoxy.py)
+# That endpoint uses lenient auth (optional key) for widget compatibility.
 
 
 # --- Helpers ---
