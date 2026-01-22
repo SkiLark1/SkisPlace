@@ -9,6 +9,8 @@
         "format:ts": "cd apps/dashboard && npm run format",
         "format": "npm run format:python && npm run format:ts",
         "test:smoke": "echo 'Running Smoke Tests...' && npm run lint",
-        "ci": "npm run lint"
+        "ci": "npm run lint",
+        "build:widget": "cd apps/widget && npm run build",
+        "sync:widgets": "mkdir -p apps/dashboard/public/widgets/epoxy && cp -r apps/widget/dist/* apps/dashboard/public/widgets/epoxy/"
     }
 }

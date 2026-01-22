@@ -13,6 +13,7 @@ from app.api import deps
 from app.db.session import AsyncSessionLocal
 from app.models import EpoxyStyle
 from app.api.endpoints.styles import _map_to_response, EpoxyStyleResponse
+from app.core.engine import process_image
 
 router = APIRouter()
 
