@@ -16,11 +16,13 @@ async function initWidget() {
   // --- 1. Config & API ---
   let apiBase: string | null = null;
   let apiKey: string | null = null;
+  let debugMode: boolean = false;
 
   const configScript = document.getElementById('skisplace-config');
   if (configScript) {
     apiBase = configScript.getAttribute('data-api-base');
     apiKey = configScript.getAttribute('data-api-key');
+    debugMode = configScript.getAttribute('data-debug') === 'true';
   }
 
   // Script tag fallback/discovery
@@ -38,6 +40,10 @@ async function initWidget() {
   if (scriptEl) {
     if (!apiKey) apiKey = scriptEl.getAttribute('data-api-key');
     if (!apiBase) apiBase = scriptEl.getAttribute('data-api-base');
+    // Also check attributes on the script tag itself if configScript wasn't found or attribute missing
+    if (!debugMode && (scriptEl.getAttribute('data-debug') === 'true' || scriptEl.getAttribute('data-debug') === '1')) {
+      debugMode = true;
+    }
   }
 
   const API_BASE = apiBase || 'http://localhost:8000/api/v1';
@@ -57,6 +63,8 @@ async function initWidget() {
     styles: [] as EpoxyStyle[],
     selectedStyleId: null as string | null,
     resultUrl: null as string | null,
+    maskUrl: null as string | null,
+    debugData: null as any | null,
     error: null as string | null
   };
 
@@ -68,7 +76,7 @@ async function initWidget() {
     // Header
     const header = document.createElement('div');
     header.className = 'sp-header';
-    header.innerHTML = `<h3>Epoxy Visualizer</h3>`;
+    header.innerHTML = `<h3>Epoxy Visualizer${debugMode ? ' <span style="font-size:0.7em; color: orange;">(DEBUG)</span>' : ''}</h3>`;
     box.appendChild(header);
 
     // Content Body
@@ -93,48 +101,74 @@ async function initWidget() {
           <p>Take a photo of your room or upload one to get started.</p>
           <input type="file" id="sp-file-input" accept="image/*" />
           <label for="sp-file-input" class="sp-btn primary">Select Photo</label>
+          
+          <div style="margin: 15px 0; color: #888; font-size: 0.8em; text-transform: uppercase;">OR</div>
+          
+          <button id="sp-sample-btn" class="sp-btn secondary">Load Sample Garage</button>
         </div>
       `;
+
       const input = content.querySelector('#sp-file-input') as HTMLInputElement;
       input.onchange = async (e: any) => {
         if (e.target.files && e.target.files[0]) {
-          const file = e.target.files[0];
-          state.uploadedImage = file;
-          state.uploadedImageUrl = URL.createObjectURL(file);
-
-          // Trigger Upload API
-          try {
-            const upData = new FormData();
-            upData.append('file', file);
-
-            // Optimistic move to styles while uploading in background? 
-            // Or block? Let's block for MVP safety or add a loading spinner.
-            // For now, let's just fire it and hope it finishes before they click "Visualize".
-            // Better: move to styles, but disable "Visualize" until upload done.
-            state.step = 'styles';
-            loadStyles();
-
-            const res = await fetch(`${API_BASE}/epoxy/uploads`, {
-              method: 'POST',
-              headers: { 'X-API-KEY': apiKey! },
-              body: upData
-            });
-            if (res.ok) {
-              const data = await res.json();
-              uploadedImageId = data.id; // Store globally or in state
-              console.log('Upload complete:', uploadedImageId);
-            } else {
-              console.error('Upload failed');
-              state.error = 'Upload failed';
-              render();
-            }
-
-          } catch (err) {
-            console.error(err);
-            state.error = 'Upload failed';
-          }
+          handleFileSelect(e.target.files[0]);
         }
       };
+
+      const sampleBtn = content.querySelector('#sp-sample-btn') as HTMLButtonElement;
+      sampleBtn.onclick = async () => {
+        sampleBtn.disabled = true;
+        sampleBtn.innerText = 'Loading...';
+
+        try {
+          // Fetch sample image
+          // The widget is running in the context of the dashboard (playground), 
+          // so /samples/garage1.jpg should be relative to the dashboard root.
+          const response = await fetch('/samples/garage1.jpg');
+          if (!response.ok) throw new Error('Sample not found');
+          const blob = await response.blob();
+          const file = new File([blob], "garage1.jpg", { type: "image/jpeg" });
+
+          handleFileSelect(file);
+        } catch (error) {
+          console.error(error);
+          state.error = 'Failed to load sample';
+          render();
+        }
+      };
+
+      async function handleFileSelect(file: File) {
+        state.uploadedImage = file;
+        state.uploadedImageUrl = URL.createObjectURL(file);
+
+        // Trigger Upload API
+        try {
+          const upData = new FormData();
+          upData.append('file', file);
+
+          state.step = 'styles';
+          loadStyles();
+
+          const res = await fetch(`${API_BASE}/epoxy/uploads`, {
+            method: 'POST',
+            headers: { 'X-API-KEY': apiKey! },
+            body: upData
+          });
+          if (res.ok) {
+            const data = await res.json();
+            uploadedImageId = data.id; // Store globally or in state
+            console.log('Upload complete:', uploadedImageId);
+          } else {
+            console.error('Upload failed');
+            state.error = 'Upload failed';
+            render();
+          }
+
+        } catch (err) {
+          console.error(err);
+          state.error = 'Upload failed';
+        }
+      }
     }
     else if (state.step === 'styles') {
       // Preview
@@ -208,6 +242,7 @@ async function initWidget() {
              <div class="sp-view-toggle">
                <button class="sp-toggle-btn active" data-view="preview">Preview</button>
                <button class="sp-toggle-btn" data-view="original">Original</button>
+               ${state.maskUrl ? '<button class="sp-toggle-btn" data-view="mask">Mask (Debug)</button>' : ''}
              </div>
              
              <div class="sp-img-display">
@@ -215,6 +250,20 @@ async function initWidget() {
              </div>
           </div>
         `;
+
+      // Debug Data Section
+      if (debugMode && state.debugData) {
+        const debugBox = document.createElement('div');
+        debugBox.style.marginTop = '20px';
+        debugBox.style.padding = '10px';
+        debugBox.style.background = '#f1f1f1';
+        debugBox.style.border = '1px solid #ccc';
+        debugBox.style.fontSize = '12px';
+        debugBox.style.overflow = 'auto';
+        debugBox.style.maxHeight = '200px';
+        debugBox.innerHTML = `<strong>Debug Response:</strong><pre>${JSON.stringify(state.debugData, null, 2)}</pre>`;
+        content.appendChild(debugBox);
+      }
 
       // Toggle Logic
       const imgEl = content.querySelector('#sp-result-img') as HTMLImageElement;
@@ -228,6 +277,8 @@ async function initWidget() {
           const view = (btn as HTMLButtonElement).dataset.view;
           if (view === 'original') {
             imgEl.src = state.uploadedImageUrl!;
+          } else if (view === 'mask') {
+            imgEl.src = state.maskUrl!;
           } else {
             imgEl.src = state.resultUrl!;
           }
@@ -244,6 +295,8 @@ async function initWidget() {
         state.step = 'upload';
         state.selectedStyleId = null;
         state.uploadedImage = null;
+        state.maskUrl = null;
+        state.debugData = null;
         render();
       };
 
@@ -300,6 +353,11 @@ async function initWidget() {
         formData.append('style_id', state.selectedStyleId);
       }
 
+      // Pass Debug Flag
+      if (debugMode) {
+        formData.append('debug', 'true');
+      }
+
       // Call /epoxy/preview
       const res = await fetch(`${API_BASE}/epoxy/preview`, {
         method: 'POST',
@@ -313,6 +371,13 @@ async function initWidget() {
       const data = await res.json();
 
       state.resultUrl = data.result_url;
+
+      // Capture Debug Info
+      if (debugMode) {
+        state.maskUrl = data.mask_url;
+        state.debugData = data;
+      }
+
       state.step = 'result';
 
     } catch (e: any) {
