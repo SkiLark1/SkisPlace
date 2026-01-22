@@ -34,33 +34,55 @@ def process_image(input_path: str, output_path: str, parameters: dict):
         alpha = int(255 * ((y - start_y) / (height - start_y)))
         draw.line((0, y, width, y), fill=alpha)
         
-    # 3. Create Overlay Layer
-    color_hex = parameters.get("color", "#CCCCCC")
-    overlay = Image.new("RGBA", (width, height), color_hex)
+    # 2.5. Edge Feathering (Phase 3.3c)
+    from PIL import ImageFilter, ImageChops
     
+    # A. Horizontal Vignette (Fade out left/right edges)
+    # This prevents the "cutout" look near walls.
+    if width > 0:
+        h_mask = Image.new("L", (width, height), 255)
+        h_draw = ImageDraw.Draw(h_mask)
+        fade_width = int(width * 0.15) # 15% fade on each side
+        for x in range(fade_width):
+            alpha = int(255 * (x / fade_width))
+            # Left side (0 -> 255)
+            h_draw.line((x, 0, x, height), fill=alpha)
+            # Right side (255 -> 0)
+            h_draw.line((width - 1 - x, 0, width - 1 - x, height), fill=alpha)
+        
+        # Multiply vertical mask by horizontal mask
+        mask = ImageChops.multiply(mask, h_mask)
+
+    # B. Gaussian Blur to soften all edges
+    mask = mask.filter(ImageFilter.GaussianBlur(radius=5))
+        
+    # 3. Create Lighting-Aware Epoxy Texture
+    color_hex = parameters.get("color", "#a1a1aa") # Default Metallic Grey
+    
+    # A. Extract Luminance (Grayscale)
+    # This captures the shadows and lighting of the original floor
+    grayscale = original.convert("L").convert("RGBA")
+    
+    # B. Create Color Layer
+    color_layer = Image.new("RGBA", (width, height), color_hex)
+    
+    # C. Multiply Blend: Color * Luminance
+    # This "dyes" the floor with the epoxy color while keeping shadows dark.
+    # We must use ImageChops for blending.
+    from PIL import ImageChops
+    # Multiply requires RGB or RGBA. Both are RGBA here.
+    blended_texture = ImageChops.multiply(color_layer, grayscale)
+    
+    # D. Gamma/Brightness Correction
+    # Multiply is subtractive (darkens). Epoxy is glossy/bright.
+    # We boost brightness to simulate the reflective nature and counter the multiply darkening.
+    enhancer = ImageEnhance.Brightness(blended_texture)
+    epoxy_finish = enhancer.enhance(1.8) # 1.8x brightness (tuned for plausible glossy look)
+
     # 4. Composite
-    # We want to blend the overlay onto the original ONLY where the mask is white.
-    # And we want to preserve the original texture (luminance).
-    
-    # Simple Alpha Composite with Mask:
-    # Result = Original * (1-Mask) + (Original Blend Overlay) * Mask
-    
-    # Let's try "Overlay" blend mode logic manually or just alpha blend
-    # Alpha blend is easiest for V1.
-    
-    # Create a composite image where we apply the color
-    # To keep texture, we can use the original image's "L" channel as alpha for the overlay?
-    # Or just simple alpha blending with the gradient mask.
-    
-    # Let's give the overlay itself some transparency so it looks like a "tint"
-    overlay.putalpha(150) # Semi-transparent color
-    
-    # Create a composite of Original + Overlay
-    tinted = Image.alpha_composite(original, overlay)
-    
-    # Now merge Tinted and Original using the Gradient Mask
-    # result = original where mask is black, tinted where mask is white
-    result = Image.composite(tinted, original, mask)
+    # Blend the new "Epoxy Finish" onto the Original using the Floor Mask
+    # Result = Original (where mask=0) + EpoxyFinish (where mask=255)
+    result = Image.composite(epoxy_finish, original, mask)
     
     # 5. Save
     # Convert back to RGB to save as JPG
