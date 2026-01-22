@@ -60,6 +60,7 @@ async function initWidget() {
     step: 'upload' as 'upload' | 'styles' | 'rendering' | 'result',
     uploadedImage: null as File | null,
     uploadedImageUrl: null as string | null,
+    loadingStyles: false as boolean,
     styles: [] as EpoxyStyle[],
     selectedStyleId: null as string | null,
     resultUrl: null as string | null,
@@ -69,7 +70,7 @@ async function initWidget() {
   };
 
   async function render() {
-    // Clear container
+    // ... (Container clearing and Header setup - kept same)
     container!.innerHTML = '<div class="sp-box"></div>';
     const box = container!.querySelector('.sp-box')!;
 
@@ -86,6 +87,7 @@ async function initWidget() {
 
     // Error Overlay
     if (state.error) {
+      // ... (Error render code kept same)
       content.innerHTML = `<div class="sp-error-msg">${state.error}</div>`;
       const btn = document.createElement('button');
       btn.className = 'sp-btn secondary';
@@ -96,6 +98,7 @@ async function initWidget() {
     }
 
     if (state.step === 'upload') {
+      // ... (Upload step kept same until handleFileSelect)
       content.innerHTML = `
         <div class="sp-upload-zone">
           <p>Take a photo of your room or upload one to get started.</p>
@@ -121,14 +124,10 @@ async function initWidget() {
         sampleBtn.innerText = 'Loading...';
 
         try {
-          // Fetch sample image
-          // The widget is running in the context of the dashboard (playground), 
-          // so /samples/garage1.jpg should be relative to the dashboard root.
           const response = await fetch('/samples/garage1.jpg');
           if (!response.ok) throw new Error('Sample not found');
           const blob = await response.blob();
           const file = new File([blob], "garage1.jpg", { type: "image/jpeg" });
-
           handleFileSelect(file);
         } catch (error) {
           console.error(error);
@@ -141,13 +140,12 @@ async function initWidget() {
         state.uploadedImage = file;
         state.uploadedImageUrl = URL.createObjectURL(file);
 
-        // Trigger Upload API
         try {
           const upData = new FormData();
           upData.append('file', file);
 
           state.step = 'styles';
-          loadStyles();
+          loadStyles(); // Will trigger re-render with loading state
 
           const res = await fetch(`${API_BASE}/epoxy/uploads`, {
             method: 'POST',
@@ -156,7 +154,7 @@ async function initWidget() {
           });
           if (res.ok) {
             const data = await res.json();
-            uploadedImageId = data.id; // Store globally or in state
+            uploadedImageId = data.id;
             console.log('Upload complete:', uploadedImageId);
           } else {
             console.error('Upload failed');
@@ -171,7 +169,7 @@ async function initWidget() {
       }
     }
     else if (state.step === 'styles') {
-      // Preview
+      // Preview Tiny
       if (state.uploadedImageUrl) {
         const preview = document.createElement('img');
         preview.src = state.uploadedImageUrl;
@@ -183,8 +181,24 @@ async function initWidget() {
       title.innerText = 'Choose a Style';
       content.appendChild(title);
 
-      if (state.styles.length === 0) {
-        content.innerHTML += `<div class="sp-loading-sm">Loading styles...</div>`;
+      if (state.loadingStyles) {
+        content.innerHTML += `
+           <div class="sp-loading-container">
+             <div class="sp-spinner"></div>
+             <p>Loading styles...</p>
+           </div>`;
+      } else if (state.styles.length === 0) {
+        content.innerHTML += `
+          <div style="text-align:center; color:#888; padding:20px;">
+            <p>No styles configured for this project.</p>
+            <button class="sp-btn secondary" id="sp-retry-styles" style="margin-top:10px;">Retry</button>
+          </div>
+        `;
+        // Defer click handler attachment
+        setTimeout(() => {
+          const retry = content.querySelector('#sp-retry-styles') as HTMLButtonElement;
+          if (retry) retry.onclick = loadStyles;
+        }, 0);
       } else {
         const grid = document.createElement('div');
         grid.className = 'sp-style-grid';
@@ -221,35 +235,41 @@ async function initWidget() {
 
       const nextBtn = document.createElement('button');
       nextBtn.className = 'sp-btn primary';
-      nextBtn.disabled = !state.selectedStyleId;
+      nextBtn.disabled = !state.selectedStyleId || state.loadingStyles;
       nextBtn.innerText = 'Visualize';
       nextBtn.onclick = performRender;
       actions.appendChild(nextBtn);
 
       content.appendChild(actions);
     }
+    // ... (Rest of render states - rendering, result - kept mostly same)
     else if (state.step === 'rendering') {
       content.innerHTML = `
-           <div class="sp-loading-container">
-             <div class="sp-spinner"></div>
-             <p>Generating preview...</p>
-           </div>
-        `;
+             <div class="sp-loading-container">
+               <div class="sp-spinner"></div>
+               <p>Generating preview...</p>
+             </div>
+          `;
     }
     else if (state.step === 'result') {
+      // ... (Result view code kept same)
       content.innerHTML = `
-          <div class="sp-result-container">
-             <div class="sp-view-toggle">
-               <button class="sp-toggle-btn active" data-view="preview">Preview</button>
-               <button class="sp-toggle-btn" data-view="original">Original</button>
-               ${state.maskUrl ? '<button class="sp-toggle-btn" data-view="mask">Mask (Debug)</button>' : ''}
+             <div class="sp-result-container">
+                <div class="sp-view-toggle">
+                  <button class="sp-toggle-btn active" data-view="preview">Preview</button>
+                  <button class="sp-toggle-btn" data-view="original">Original</button>
+                  ${state.maskUrl ? '<button class="sp-toggle-btn" data-view="mask">Mask (Debug)</button>' : ''}
+                </div>
+                
+                <div class="sp-img-display">
+                   <img src="${state.resultUrl}" class="sp-main-img" id="sp-result-img" />
+                </div>
              </div>
-             
-             <div class="sp-img-display">
-                <img src="${state.resultUrl}" class="sp-main-img" id="sp-result-img" />
-             </div>
-          </div>
-        `;
+           `;
+      // ... (Debug and Actions logic kept same but re-inserted for completeness if replace block covers it, 
+      // but wait, I can target specific functions or blocks to be safe. 
+      // The provided code is mostly monolithic in one file. I will target the `render` function and `loadStyles`.)
+      // Actually, I'll just rewrite the `loadStyles` and `selectStyle` area to capture `render` changes in `styles` step.
 
       // Debug Data Section
       if (debugMode && state.debugData) {
@@ -268,26 +288,19 @@ async function initWidget() {
       // Toggle Logic
       const imgEl = content.querySelector('#sp-result-img') as HTMLImageElement;
       const btns = content.querySelectorAll('.sp-toggle-btn');
-
       btns.forEach(btn => {
         (btn as HTMLButtonElement).onclick = () => {
           btns.forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
-
           const view = (btn as HTMLButtonElement).dataset.view;
-          if (view === 'original') {
-            imgEl.src = state.uploadedImageUrl!;
-          } else if (view === 'mask') {
-            imgEl.src = state.maskUrl!;
-          } else {
-            imgEl.src = state.resultUrl!;
-          }
+          if (view === 'original') imgEl.src = state.uploadedImageUrl!;
+          else if (view === 'mask') imgEl.src = state.maskUrl!;
+          else imgEl.src = state.resultUrl!;
         };
       });
 
       const actions = document.createElement('div');
       actions.className = 'sp-actions';
-
       const resetBtn = document.createElement('button');
       resetBtn.className = 'sp-btn secondary';
       resetBtn.innerText = 'Start Over';
@@ -299,14 +312,12 @@ async function initWidget() {
         state.debugData = null;
         render();
       };
-
       const downloadBtn = document.createElement('a');
       downloadBtn.className = 'sp-btn primary';
       downloadBtn.innerText = 'Download';
       downloadBtn.href = state.resultUrl!;
       downloadBtn.download = 'epoxy_preview.jpg';
       downloadBtn.target = '_blank';
-
       actions.appendChild(resetBtn);
       actions.appendChild(downloadBtn);
       content.appendChild(actions);
@@ -316,7 +327,8 @@ async function initWidget() {
   // --- Logic ---
 
   async function loadStyles() {
-    render(); // Show loading state inside styles step
+    state.loadingStyles = true;
+    render();
     try {
       const res = await fetch(`${API_BASE}/styles/public`, {
         headers: { 'X-API-KEY': apiKey! }
@@ -328,8 +340,10 @@ async function initWidget() {
       }
     } catch (e) {
       console.error(e);
+    } finally {
+      state.loadingStyles = false;
+      render();
     }
-    render();
   }
 
   function selectStyle(id: string) {

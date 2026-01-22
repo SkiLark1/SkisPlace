@@ -452,3 +452,131 @@ async def disable_project_module(
     
     return response
 
+
+# --- Styles (Project Scoped) ---
+
+from app.models.epoxy_style import EpoxyStyle
+from app.api.endpoints.styles import EpoxyStyleResponse, _map_to_response
+
+@router.get("/{project_id}/styles", response_model=List[EpoxyStyleResponse])
+async def read_project_styles(
+    *,
+    db: AsyncSession = Depends(deps.get_db),
+    project_id: UUID,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """
+    List custom styles for a project.
+    """
+    # Verify project exists/access
+    project = await db.get(Project, project_id)
+    if not project:
+         raise HTTPException(status_code=404, detail="Project not found")
+
+    query = select(EpoxyStyle).where(EpoxyStyle.project_id == project_id).options(selectinload(EpoxyStyle.cover_image))
+    result = await db.execute(query)
+    styles = result.scalars().all()
+    
+    return [_map_to_response(s) for s in styles]
+
+@router.delete("/{project_id}/styles/{style_id}", response_model=EpoxyStyleResponse)
+async def delete_project_style(
+    *,
+    db: AsyncSession = Depends(deps.get_db),
+    project_id: UUID,
+    style_id: UUID,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """
+    Delete a project-specific style. 
+    Does not allow deleting system styles (which have null project_id).
+    """
+    # Find style ensuring it belongs to project
+    query = select(EpoxyStyle).where(
+        EpoxyStyle.id == style_id,
+        EpoxyStyle.project_id == project_id
+    ).options(selectinload(EpoxyStyle.cover_image))
+    
+    result = await db.execute(query)
+    style = result.scalars().first()
+    
+    if not style:
+        # Check if it exists but is system?
+        check_q = select(EpoxyStyle).where(EpoxyStyle.id == style_id)
+        res = await db.execute(check_q)
+        if res.scalars().first():
+             raise HTTPException(status_code=403, detail="Cannot delete system style or style from another project")
+        raise HTTPException(status_code=404, detail="Style not found")
+
+    response = _map_to_response(style)
+    
+    await db.delete(style)
+    await db.commit()
+    
+    return response
+
+@router.post("/{project_id}/styles/import-defaults", response_model=List[EpoxyStyleResponse])
+async def import_project_defaults(
+    *,
+    db: AsyncSession = Depends(deps.get_db),
+    project_id: UUID,
+    current_user: User = Depends(deps.get_current_user),
+) -> Any:
+    """
+    Import/Copy system default styles into this project.
+    This allows the project to start with a full set of styles that override the defaults.
+    """
+    # Verify project
+    project = await db.get(Project, project_id)
+    if not project:
+         raise HTTPException(status_code=404, detail="Project not found")
+
+    # Fetch System Styles
+    query = select(EpoxyStyle).where(
+        EpoxyStyle.is_system == True
+    ).options(selectinload(EpoxyStyle.cover_image))
+    
+    result = await db.execute(query)
+    system_styles = result.scalars().all()
+    
+    if not system_styles:
+        return []
+
+    new_styles = []
+    for sys_style in system_styles:
+        # Check if already exists (optional, but good to avoid dupes on multi-click)
+        # For now, simplistic: just create. Duplicate names allowed.
+        
+        new_style = EpoxyStyle(
+            project_id=project_id,
+            name=sys_style.name, # Keep same name
+            category=sys_style.category,
+            is_system=False,
+            cover_image_id=sys_style.cover_image_id,
+            texture_maps=sys_style.texture_maps,
+            parameters=sys_style.parameters
+        )
+        db.add(new_style)
+        new_styles.append(new_style)
+    
+    await db.commit()
+    
+    # Refresh all to get IDs and relationships
+    for ns in new_styles:
+        await db.refresh(ns)
+        # We need to reload cover_image for response map if we want to be correct, 
+        # though refresh might not load relation.
+        # Efficient way: return list using _map_to_response but we need to ensure loaded.
+        # Let's just do a fresh query for the response.
+    
+    # Return all project styles to update UI efficiently? Or just the new ones?
+    # Schema says List[EpoxyStyleResponse]. Let's return the new ones.
+    
+    # Re-query to ensure relationships loaded
+    new_ids = [s.id for s in new_styles]
+    q = select(EpoxyStyle).where(EpoxyStyle.id.in_(new_ids)).options(selectinload(EpoxyStyle.cover_image))
+    res = await db.execute(q)
+    fetched = res.scalars().all()
+
+    return [_map_to_response(s) for s in fetched]
+

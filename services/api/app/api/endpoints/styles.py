@@ -24,6 +24,7 @@ class EpoxyStyleCreate(BaseModel):
     name: str
     category: str = "General"
     cover_image_id: Optional[str] = None
+    project_id: Optional[uuid.UUID] = None
     texture_maps: StyleTextureMaps = StyleTextureMaps()
     parameters: dict = {}
 
@@ -32,6 +33,7 @@ class EpoxyStyleResponse(BaseModel):
     name: str
     category: str
     is_system: bool
+    project_id: Optional[uuid.UUID] = None
     cover_image_url: Optional[str] = None
     texture_maps: dict
     parameters: dict
@@ -49,6 +51,8 @@ async def create_style(
 ):
     """
     Create a new Epoxy Style.
+    If project_id is provided, creates a Project Style (is_system=False).
+    If no project_id, creates a System Style (is_system=True) - Admin only (implicit).
     """
     # 1. Validate Cover Image
     cover_uuid = None
@@ -62,11 +66,22 @@ async def create_style(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid cover image UUID")
 
-    # 2. Create Record
+    # 2. Determine System vs Project
+    is_system = False
+    if style_in.project_id:
+        is_system = False
+        # Limit checking: ensure project exists? 
+        # For now we rely on FK constraint or simple success. 
+    else:
+        # If no project, assume System Style (Admin)
+        is_system = True
+
+    # 3. Create Record
     new_style = EpoxyStyle(
         name=style_in.name,
         category=style_in.category,
-        is_system=False, # default for user created?
+        is_system=is_system, 
+        project_id=style_in.project_id,
         cover_image_id=cover_uuid,
         texture_maps=style_in.texture_maps.model_dump(exclude_none=True),
         parameters=style_in.parameters
@@ -101,16 +116,33 @@ async def list_styles(
 @router.get("/public", response_model=List[EpoxyStyleResponse])
 async def list_public_styles(
     db: AsyncSession = Depends(deps.get_db),
+    project: Any = Depends(deps.verify_public_origin), # Enforce API Key
+    debug: bool = False
 ):
     """
     Publicly accessible styles for the visualizer.
+    Returns Project Styles if they exist; otherwise returns System Styles.
     """
-    # For now return all. Later filter by is_system or user's project context.
-    query = select(EpoxyStyle).options(selectinload(EpoxyStyle.cover_image))
-    result = await db.execute(query)
-    styles = result.scalars().all()
+    # 1. Try to get Project Styles
+    query = select(EpoxyStyle).where(
+        EpoxyStyle.project_id == project.id
+    ).options(selectinload(EpoxyStyle.cover_image))
     
-    return [_map_to_response(s) for s in styles]
+    result = await db.execute(query)
+    project_styles = result.scalars().all()
+    
+    if project_styles:
+        return [_map_to_response(s) for s in project_styles]
+        
+    # 2. Fallback to System Styles
+    query_sys = select(EpoxyStyle).where(
+        EpoxyStyle.is_system == True
+    ).options(selectinload(EpoxyStyle.cover_image))
+    
+    result_sys = await db.execute(query_sys)
+    system_styles = result_sys.scalars().all()
+    
+    return [_map_to_response(s) for s in system_styles]
 
 
 # --- Helpers ---

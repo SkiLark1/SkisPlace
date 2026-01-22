@@ -167,3 +167,57 @@ async def verify_public_origin(
     # For now, if header missing but domains required -> Block
     raise HTTPException(status_code=403, detail="Missing Origin/Referer header")
 
+async def get_current_project_opt(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-KEY"),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[Project]:
+    """
+    Optional version of get_project_from_api_key.
+    Returns Project if key is valid, else None.
+    Does NOT raise 401.
+    """
+    if not x_api_key:
+        return None
+
+    try:
+        # Re-use logic by calling the other function? 
+        # Cannot easily call dependency from dependency without using the Depends mechanism which enforces it.
+        # So we copy the logic but safe return.
+        
+        # Check for Preview Token (JWT)
+        if "." in x_api_key:
+            try:
+                payload = jwt.decode(
+                    x_api_key, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+                )
+                if payload.get("type") != "preview":
+                    return None
+                
+                project_id = payload.get("sub")
+                if not project_id:
+                    return None
+
+                result = await db.execute(select(Project).where(Project.id == project_id).options(selectinload(Project.domains)))
+                return result.scalar_one_or_none()
+            except:
+                return None
+
+        # Standard API Key Hash Check
+        hashed = hash_api_key(x_api_key)
+        
+        query = (
+            select(ApiKey)
+            .where(ApiKey.key_hash == hashed)
+            .options(selectinload(ApiKey.project).selectinload(Project.domains))
+        )
+        result = await db.execute(query)
+        key_obj = result.scalars().first()
+
+        if key_obj:
+            return key_obj.project
+        return None
+
+    except Exception:
+        return None
+

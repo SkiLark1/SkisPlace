@@ -23,3 +23,7 @@ class EpoxyStyle(Base):
 
     # Relationships
     cover_image = relationship("Asset", foreign_keys=[cover_image_id])
+    
+    # Project Scoping (Null = System Default, Set = Project Specific)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    project = relationship("Project")
