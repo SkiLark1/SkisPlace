@@ -122,26 +122,28 @@ async def get_project_from_api_key(
 
 async def verify_public_origin(
     request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-KEY"),
     project: Project = Depends(get_project_from_api_key),
 ) -> Project:
     """
     Verify request Origin against Project Allowed Domains.
+    Preview tokens bypass this check (short-lived, requires dashboard auth).
     """
+    # Check if this is a preview token - bypass domain check
+    if x_api_key and "." in x_api_key:
+        try:
+            payload = jwt.decode(
+                x_api_key, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+            )
+            if payload.get("type") == "preview":
+                # Preview tokens bypass domain verification
+                return project
+        except:
+            pass  # Fall through to normal domain check
+    
     origin = request.headers.get("origin")
     referer = request.headers.get("referer")
     
-    # If no domains configured, maybe allow all? Or block all? 
-    # For security, if domains ARE configured, we must match.
-    # If NO domains configured, we might be in "dev mode" or "setup mode".
-    # Let's be strict: If domains exist, origin MUST match.
-    # If no domains exist, allow (for local dev convenience) or block?
-    # Better: If list is empty, BLOCK (unless it's localhost?). 
-    # Actually, for this stage, let's implement:
-    # - If allowed_domains is empty -> Allow (open mode)
-    # - If allowed_domains is set -> Origin MUST match one of them.
-    
-    allowed_domains = [d.domain for d in project.domains if d.verified] # Only verified? Or all? Let's say all for now as we don't have verification flow yet.
-    # actually let's use all domains for now.
     allowed_domains = [d.domain for d in project.domains]
 
     if not allowed_domains:
@@ -149,22 +151,19 @@ async def verify_public_origin(
 
     # Check Origin
     if origin:
-        # origin usually "https://example.com"
-        # simplistic check
         domain_match = any(d in origin for d in allowed_domains)
         if not domain_match:
              raise HTTPException(status_code=403, detail=f"Origin {origin} not allowed")
         return project
 
-    # Check Referer if Origin missing (sometime happens)
+    # Check Referer if Origin missing
     if referer:
         domain_match = any(d in referer for d in allowed_domains)
         if not domain_match:
              raise HTTPException(status_code=403, detail=f"Referer {referer} not allowed")
         return project
 
-    # If neither, and domains strictly required...
-    # For now, if header missing but domains required -> Block
+    # If neither, and domains strictly required -> Block
     raise HTTPException(status_code=403, detail="Missing Origin/Referer header")
 
 async def get_current_project_opt(

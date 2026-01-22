@@ -18,10 +18,17 @@ async function initWidget() {
   let apiKey: string | null = null;
   let debugMode: boolean = false;
 
+  // Check URL parameters first (for dashboard preview mode)
+  const urlParams = new URLSearchParams(window.location.search);
+  const projectKeyFromUrl = urlParams.get('projectKey');
+  if (projectKeyFromUrl) {
+    apiKey = projectKeyFromUrl;
+  }
+
   const configScript = document.getElementById('skisplace-config');
   if (configScript) {
     apiBase = configScript.getAttribute('data-api-base');
-    apiKey = configScript.getAttribute('data-api-key');
+    if (!apiKey) apiKey = configScript.getAttribute('data-api-key');
     debugMode = configScript.getAttribute('data-debug') === 'true';
   }
 
@@ -40,7 +47,6 @@ async function initWidget() {
   if (scriptEl) {
     if (!apiKey) apiKey = scriptEl.getAttribute('data-api-key');
     if (!apiBase) apiBase = scriptEl.getAttribute('data-api-base');
-    // Also check attributes on the script tag itself if configScript wasn't found or attribute missing
     if (!debugMode && (scriptEl.getAttribute('data-debug') === 'true' || scriptEl.getAttribute('data-debug') === '1')) {
       debugMode = true;
     }

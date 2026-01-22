@@ -37,55 +37,6 @@ class PreviewResponse(BaseModel):
 
 # --- Endpoints ---
 
-@router.get("/styles/public", response_model=List[EpoxyStyleResponse])
-async def get_public_styles(
-    response: JSONResponse,
-    request: Request,
-    db: AsyncSession = Depends(deps.get_db),
-    # Optional: Try to resolve project from key/token if present
-    project: Any = Depends(deps.get_current_project_opt) 
-):
-    """
-    Get available epoxy styles.
-    Returns project-specific styles if they exist, otherwise system defaults.
-    """
-    styles = []
-    source = "system"
-
-    # 1. Try Project Styles
-    if project:
-        query = select(EpoxyStyle).where(EpoxyStyle.project_id == project.id).options(selectinload(EpoxyStyle.cover_image))
-        result = await db.execute(query)
-        project_styles = result.scalars().all()
-        
-        if project_styles:
-            styles = project_styles
-            source = "project"
-
-    # 2. Fallback to System Defaults
-    if not styles:
-        query = select(EpoxyStyle).where(
-            EpoxyStyle.project_id == None,
-            EpoxyStyle.is_system == True
-        ).options(selectinload(EpoxyStyle.cover_image))
-        result = await db.execute(query)
-        styles = result.scalars().all()
-        source = "system"
-
-    # Debug Header
-    if request.query_params.get("debug"):
-        # We can't easily modify the body structure without breaking response_model
-        # So we set a custom header
-        # Note: In FastAPI, response headers are set on the Response object
-        # but here we inject into the view response? No, we need to add to response.
-        pass
-    
-    # To set headers in FastAPI with a return value, we need to use Response param
-    # But response_model validation runs after. 
-    # Let's just return the list. The verification will be "do I see my custom style?"
-    
-    return [_map_to_response(s) for s in styles]
-
 @router.post("/uploads", response_model=UploadResponse)
 async def upload_image(
     request: Request,
