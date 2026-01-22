@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from app.api import deps
 from app.db.session import AsyncSessionLocal
-from app.models import EpoxyStyle
+from app.models import EpoxyStyle, ProjectModule
 from app.api.endpoints.styles import _map_to_response, EpoxyStyleResponse
 from app.core.engine import process_image
 
@@ -34,6 +34,7 @@ class PreviewResponse(BaseModel):
     status: str
     result_url: str
     mask_url: str | None = None
+    mask_source: str | None = None
 
 # --- Endpoints ---
 
@@ -99,18 +100,31 @@ async def upload_image(
 
     return UploadResponse(id=str(asset_id), url=url)
 
+from app.models.module import ProjectModule, Module
+from app.models.project import Project
+
 @router.post("/preview", response_model=PreviewResponse)
 async def create_preview_job(
     request: Request,
     image_id: str = Form(...),
     style_id: str = Form(...),
+    custom_mask: str | None = Form(None), # Base64 encoded PNG
     debug: bool = Form(False),
     db: AsyncSession = Depends(deps.get_db),
+    project_from_key: Project | None = Depends(deps.get_current_project_opt),
+    project_id: str | None = Form(None), 
+    module_id: str | None = Form(None),
 ):
     """
     Request a preview render.
     Currently assumes the 'image_id' corresponds to a file named {image_id}.* in uploads.
     """
+    # Fallback to project from API Key if not provided in form
+    if not project_id and project_from_key:
+        project_id = str(project_from_key.id)
+
+    print(f"DEBUG: Epoxy Preview Request. ProjectID={project_id}, StyleID={style_id}")
+
     try:
         # 0. Fetch Style
         try:
@@ -125,7 +139,43 @@ async def create_preview_job(
         if not style:
              return JSONResponse(status_code=404, content={"status": "error", "message": "Style not found"})
 
-        # 1. Resolve Image Path (Check if exists)
+        # 1. Fetch Module Config for AI
+        ai_config = None
+        if project_id:
+            try:
+                # Find the ProjectModule config
+                print(f"DEBUG: Looking for config for project {project_id}")
+                mod_query = (
+                    select(ProjectModule)
+                    .join(Module)
+                    .where(
+                        ProjectModule.project_id == uuid.UUID(project_id),
+                        Module.name == "Epoxy Visualizer"
+                    )
+                )
+                mod_result = await db.execute(mod_query)
+                module_obj = mod_result.scalar_one_or_none()
+                
+                if module_obj:
+                    if module_obj.config:
+                         ai_config = module_obj.config.get("ai_segmentation", {})
+                    else:
+                         print("DEBUG: Module found but has no config")
+                         
+                    # Ensure defaults
+                    if ai_config and ai_config.get("enabled"):
+                        if "confidence_threshold" not in ai_config:
+                            ai_config["confidence_threshold"] = 0.5
+                else:
+                    print("DEBUG: No ProjectModule found for this project + Epoxy Visualizer")
+                            
+                print(f"DEBUG: Project {project_id} AI Config: {ai_config}")
+            except Exception as e:
+                print(f"WARN: Failed to fetch module config: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # 2. Resolve Image Path (Check if exists)
         # Check if dir exists first
         if not os.path.exists(UPLOAD_DIR):
              print(f"DEBUG: UPLOAD_DIR {UPLOAD_DIR} does not exist. CWD: {os.getcwd()}")
@@ -159,8 +209,8 @@ async def create_preview_job(
             if "color" not in params:
                  params["color"] = "#a1a1aa" 
 
-            # Call engine with debug flag
-            result = process_image(input_path, output_path, params, debug=debug)
+            # Call engine with debug flag and AI config
+            result = process_image(input_path, output_path, params, debug=debug, custom_mask=custom_mask, ai_config=ai_config)
             
             # Handle result dict
             process_success = result.get("success", False)
@@ -184,9 +234,10 @@ async def create_preview_job(
              return JSONResponse(status_code=404, content={"status": "error", "message": "Image not found"})
 
         return PreviewResponse(
-            status="success",
+            status="success" if process_success else "error",
             result_url=result_url,
-            mask_url=mask_url
+            mask_url=mask_url,
+            mask_source=result.get("mask_source")
         )
 
     except Exception as e:

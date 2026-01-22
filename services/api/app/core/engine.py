@@ -1,7 +1,11 @@
 import os
+import base64
+import io
 from PIL import Image, ImageEnhance, ImageOps, ImageDraw
 
-def process_image(input_path: str, output_path: str, parameters: dict, debug: bool = False) -> dict:
+from app.core.segmentation import FloorSegmenter
+
+def process_image(input_path: str, output_path: str, parameters: dict, debug: bool = False, custom_mask: str | None = None, ai_config: dict | None = None) -> dict:
     """
     Process the image to apply a simulated epoxy finish.
     
@@ -15,11 +19,15 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
             - brightness_boost: Multiplier (default 1.8). Replaces old hardcoded 1.8.
             - finish: 'gloss', 'satin', 'matte' (default 'gloss').
         debug: If True, saves intermediate assets (like mask) and returns their paths.
-        
+        custom_mask: Base64 string of user-drawn mask.
+        ai_config: Configuration for AI segmentation.
+            - enabled: bool
+            - confidence_threshold: float
+
     Returns:
-        dict: {"success": bool, "mask_filename": str|None, "message": str}
+        dict: {"success": bool, "mask_filename": str|None, "message": str, "mask_source": str}
     """
-    result_info = {"success": False, "mask_filename": None, "message": ""}
+    result_info = {"success": False, "mask_filename": None, "message": "", "mask_source": "heuristic"}
 
     # 1. Load Image
     try:
@@ -31,37 +39,87 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
         
     width, height = original.size
     
-    # 2. Generate Mask (Heuristic)
-    # Parameters for Mask
-    mask_start = float(parameters.get("mask_start", 0.45)) # 0.0 to 1.0 (Top to Bottom)
-    mask_end = float(parameters.get("mask_end", 1.0)) # 0.0 to 1.0
+
+    # 2. Generate Mask
+    mask = None
+
+    
+    # Extract common parameters
     mask_blur = int(parameters.get("mask_blur", 5))
-    mask_falloff = float(parameters.get("mask_falloff", 1.0)) # Exponent: 1.0=Linear, >1.0=Convex (Slow start), <1.0=Concave
-    
-    mask = Image.new("L", (width, height), 0)
-    draw = ImageDraw.Draw(mask)
-    
-    # Calculate Y coordinates
-    start_y = int(height * mask_start)
-    end_y = int(height * mask_end)
-    
-    # Ensure sane definition
-    if end_y > start_y:
-        for y in range(start_y, height):
-            # Calculate normalized position t (0.0 at Start, 1.0 at End)
-            if y >= end_y:
-                t = 1.0
+
+    # A. Custom Mask (User Refinement)
+    if custom_mask:
+        try:
+            # Decode Base64 (starts with "data:image/png;base64,...")
+            if "," in custom_mask:
+                header, encoded = custom_mask.split(",", 1)
             else:
-                t = (y - start_y) / (end_y - start_y)
+                encoded = custom_mask
             
-            # Apply Falloff Curve
-            # alpha = 255 * (t ^ power)
-            alpha_val = int(255 * (t ** mask_falloff))
-            draw.line((0, y, width, y), fill=alpha_val)
+            mask_data = base64.b64decode(encoded)
+            user_mask = Image.open(io.BytesIO(mask_data)).convert("L")
             
-    # Edge Feathering
+            # Resize to match original if needed
+            if user_mask.size != (width, height):
+                user_mask = user_mask.resize((width, height), Image.Resampling.LANCZOS)
+            
+            mask = user_mask
+            print("DEBUG: Using custom user mask")
+            result_info["mask_source"] = "user"
+        except Exception as e:
+            print(f"ERROR: Failed to process custom mask: {e}")
+            # Fallback to heuristic
+    
+    # B. AI Segmentation
+    if not mask and ai_config and ai_config.get("enabled", False):
+        try:
+            confidence = float(ai_config.get("confidence_threshold", 0.5))
+            print(f"DEBUG: Attempting AI Segmentation with confidence {confidence}")
+            ai_mask = FloorSegmenter.instance().segment(original, confidence_threshold=confidence)
+            
+            if ai_mask:
+                mask = ai_mask
+                result_info["mask_source"] = "ai"
+                print("DEBUG: AI Segmentation successful")
+            else:
+                print("DEBUG: AI Segmentation returned no mask (model missing or inference failed)")
+        except Exception as e:
+            print(f"ERROR: AI Segmentation failed: {e}")
+            # Fallback to heuristic
+
+    # C. Heuristic Mask (Fallback)
+    if not mask:
+        result_info["mask_source"] = "heuristic"
+        # Parameters for Mask
+        mask_start = float(parameters.get("mask_start", 0.45)) # 0.0 to 1.0 (Top to Bottom)
+        mask_end = float(parameters.get("mask_end", 1.0)) # 0.0 to 1.0
+
+        mask_falloff = float(parameters.get("mask_falloff", 1.0)) # Exponent: 1.0=Linear, >1.0=Convex (Slow start), <1.0=Concave
+        
+        mask = Image.new("L", (width, height), 0)
+        draw = ImageDraw.Draw(mask)
+        
+        # Calculate Y coordinates
+        start_y = int(height * mask_start)
+        end_y = int(height * mask_end)
+        
+        # Ensure sane definition
+        if end_y > start_y:
+            for y in range(start_y, height):
+                # Calculate normalized position t (0.0 at Start, 1.0 at End)
+                if y >= end_y:
+                    t = 1.0
+                else:
+                    t = (y - start_y) / (end_y - start_y)
+                
+                # Apply Falloff Curve
+                # alpha = 255 * (t ^ power)
+                alpha_val = int(255 * (t ** mask_falloff))
+                draw.line((0, y, width, y), fill=alpha_val)
+            
+    # Edge Feathering (Only for Heuristic fallback to hide hard edges)
     from PIL import ImageFilter, ImageChops
-    if width > 0:
+    if width > 0 and result_info.get("mask_source") == "heuristic":
         h_mask = Image.new("L", (width, height), 255)
         h_draw = ImageDraw.Draw(h_mask)
         fade_width = int(width * 0.15)

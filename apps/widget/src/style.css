@@ -301,3 +301,263 @@ input[type="file"] {
   object-fit: contain;
   display: block;
 }
+
+/* Tuning Panel */
+.sp-tuning-panel {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f9fafb;
+  border-radius: 8px;
+  border: 1px solid var(--sp-border);
+}
+
+.sp-tuning-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+
+.sp-tuning-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.sp-tuning-row:last-child {
+  margin-bottom: 0;
+}
+
+.sp-tuning-row label {
+  font-size: 13px;
+  color: #374151;
+  min-width: 60px;
+}
+
+.sp-tuning-row input[type="range"] {
+  flex: 1;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #e5e7eb;
+  border-radius: 3px;
+  outline: none;
+}
+
+.sp-tuning-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  background: var(--sp-primary);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.sp-tuning-row span {
+  font-size: 13px;
+  color: #374151;
+  font-weight: 500;
+  min-width: 40px;
+  text-align: right;
+}
+
+.sp-finish-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.sp-finish-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  border: 1px solid var(--sp-border);
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: #374151;
+}
+
+.sp-finish-btn:hover {
+  background: #f3f4f6;
+}
+
+.sp-finish-btn.active {
+  background: var(--sp-primary);
+  color: white;
+  border-color: var(--sp-primary);
+}
+
+/* Debug Panel */
+.sp-debug-panel {
+  margin-top: 12px;
+  padding: 12px;
+  background: #1f2937;
+  border-radius: 8px;
+  border: 1px solid #374151;
+}
+
+.sp-debug-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  letter-spacing: 0.5px;
+}
+
+.sp-debug-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid #374151;
+}
+
+.sp-debug-row:last-child {
+  border-bottom: none;
+}
+
+.sp-debug-label {
+  font-size: 12px;
+  color: #9ca3af;
+  min-width: 100px;
+}
+
+.sp-debug-value {
+  font-size: 12px;
+  color: #f3f4f6;
+  font-weight: 500;
+}
+
+.sp-debug-row input[type="range"] {
+  flex: 1;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #4b5563;
+  border-radius: 2px;
+}
+
+.sp-debug-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  background: #60a5fa;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+/* Mask Overlay */
+.sp-img-display {
+  position: relative;
+}
+
+.sp-mask-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
+
+/* Mask Editing UI */
+.sp-mask-edit-panel {
+  margin-top: 10px;
+  background: #1f2937;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #374151;
+}
+
+.sp-edit-header {
+  padding: 8px 12px;
+  background: #111827;
+  border-bottom: 1px solid #374151;
+}
+
+.sp-edit-tools {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sp-brush-modes {
+  display: flex;
+  gap: 8px;
+}
+
+.sp-brush-btn {
+  flex: 1;
+  padding: 6px;
+  background: #374151;
+  border: 1px solid #4b5563;
+  color: #d1d5db;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.sp-brush-btn:hover {
+  background: #4b5563;
+}
+
+.sp-brush-btn.active {
+  background: #3b82f6;
+  border-color: #2563eb;
+  color: white;
+}
+
+.sp-brush-size {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.sp-brush-size input {
+  flex: 1;
+  height: 4px;
+}
+
+.sp-edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.sp-edit-btn {
+  flex: 1;
+  padding: 4px;
+  background: #374151;
+  border: 1px solid #4b5563;
+  color: #d1d5db;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.sp-edit-btn:hover:not(:disabled) {
+  background: #4b5563;
+}
+
+.sp-edit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sp-mask-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 20;
+  touch-action: none;
+  opacity: 0.6;
+  cursor: crosshair;
+}

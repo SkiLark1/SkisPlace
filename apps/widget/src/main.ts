@@ -72,7 +72,23 @@ async function initWidget() {
     resultUrl: null as string | null,
     maskUrl: null as string | null,
     debugData: null as any | null,
-    error: null as string | null
+    error: null as string | null,
+    // User Tuning (session-scoped)
+    tuning: {
+      blend_strength: 0.85,
+      finish: 'satin' as 'gloss' | 'satin' | 'matte'
+    },
+    // Mask Editing (session-scoped)
+    maskEdit: {
+      enabled: false,
+      mode: 'add' as 'add' | 'remove',
+      brushSize: 30,
+      canvas: null as HTMLCanvasElement | null,
+      ctx: null as CanvasRenderingContext2D | null,
+      history: [] as ImageData[],
+      historyIndex: -1,
+      customMaskData: null as string | null  // Base64 PNG
+    }
   };
 
   async function render() {
@@ -229,6 +245,48 @@ async function initWidget() {
         content.appendChild(grid);
       }
 
+      // Tuning Panel (show when style selected)
+      if (state.selectedStyleId) {
+        const tuningPanel = document.createElement('div');
+        tuningPanel.className = 'sp-tuning-panel';
+        tuningPanel.innerHTML = `
+          <div class="sp-tuning-header">Adjust Settings</div>
+          <div class="sp-tuning-row">
+            <label>Strength</label>
+            <input type="range" id="sp-strength-slider" min="0.3" max="1.0" step="0.05" value="${state.tuning.blend_strength}" />
+            <span id="sp-strength-val">${(state.tuning.blend_strength * 100).toFixed(0)}%</span>
+          </div>
+          <div class="sp-tuning-row">
+            <label>Finish</label>
+            <div class="sp-finish-btns">
+              <button class="sp-finish-btn ${state.tuning.finish === 'gloss' ? 'active' : ''}" data-finish="gloss">Gloss</button>
+              <button class="sp-finish-btn ${state.tuning.finish === 'satin' ? 'active' : ''}" data-finish="satin">Satin</button>
+              <button class="sp-finish-btn ${state.tuning.finish === 'matte' ? 'active' : ''}" data-finish="matte">Matte</button>
+            </div>
+          </div>
+        `;
+        content.appendChild(tuningPanel);
+
+        // Bind events after DOM insert
+        setTimeout(() => {
+          const slider = document.getElementById('sp-strength-slider') as HTMLInputElement;
+          const valSpan = document.getElementById('sp-strength-val');
+          if (slider) {
+            slider.oninput = () => {
+              state.tuning.blend_strength = parseFloat(slider.value);
+              if (valSpan) valSpan.innerText = (state.tuning.blend_strength * 100).toFixed(0) + '%';
+            };
+          }
+          const finishBtns = document.querySelectorAll('.sp-finish-btn');
+          finishBtns.forEach((btn) => {
+            (btn as HTMLButtonElement).onclick = () => {
+              state.tuning.finish = (btn as HTMLButtonElement).dataset.finish as any;
+              render();
+            };
+          });
+        }, 0);
+      }
+
       // Actions
       const actions = document.createElement('div');
       actions.className = 'sp-actions';
@@ -258,52 +316,167 @@ async function initWidget() {
           `;
     }
     else if (state.step === 'result') {
-      // ... (Result view code kept same)
       content.innerHTML = `
-             <div class="sp-result-container">
-                <div class="sp-view-toggle">
-                  <button class="sp-toggle-btn active" data-view="preview">Preview</button>
-                  <button class="sp-toggle-btn" data-view="original">Original</button>
-                  ${state.maskUrl ? '<button class="sp-toggle-btn" data-view="mask">Mask (Debug)</button>' : ''}
-                </div>
-                
-                <div class="sp-img-display">
-                   <img src="${state.resultUrl}" class="sp-main-img" id="sp-result-img" />
-                </div>
-             </div>
-           `;
-      // ... (Debug and Actions logic kept same but re-inserted for completeness if replace block covers it, 
-      // but wait, I can target specific functions or blocks to be safe. 
-      // The provided code is mostly monolithic in one file. I will target the `render` function and `loadStyles`.)
-      // Actually, I'll just rewrite the `loadStyles` and `selectStyle` area to capture `render` changes in `styles` step.
+        <div class="sp-result-container">
+          <div class="sp-view-toggle">
+            <button class="sp-toggle-btn active" data-view="preview">Preview</button>
+            <button class="sp-toggle-btn" data-view="original">Original</button>
+            ${state.maskUrl ? '<button class="sp-toggle-btn" data-view="mask">Mask Only</button>' : ''}
+            ${state.maskUrl ? '<button class="sp-toggle-btn" data-view="overlay">Mask Overlay</button>' : ''}
+          </div>
+          
+          <div class="sp-img-display" id="sp-img-container">
+            <img src="${state.resultUrl}" class="sp-main-img" id="sp-result-img" />
+            ${state.maskUrl ? '<img src="' + state.maskUrl + '" class="sp-mask-overlay" id="sp-mask-overlay" style="display:none; opacity: 0.5;" />' : ''}
+          </div>
 
-      // Debug Data Section
-      if (debugMode && state.debugData) {
-        const debugBox = document.createElement('div');
-        debugBox.style.marginTop = '20px';
-        debugBox.style.padding = '10px';
-        debugBox.style.background = '#f1f1f1';
-        debugBox.style.border = '1px solid #ccc';
-        debugBox.style.fontSize = '12px';
-        debugBox.style.overflow = 'auto';
-        debugBox.style.maxHeight = '200px';
-        debugBox.innerHTML = `<strong>Debug Response:</strong><pre>${JSON.stringify(state.debugData, null, 2)}</pre>`;
-        content.appendChild(debugBox);
-      }
+          ${debugMode ? `
+          <div class="sp-debug-panel">
+            <div class="sp-debug-header">Visual Debug</div>
+            <div class="sp-debug-row">
+              <span class="sp-debug-label">Mask Source</span>
+              <span class="sp-debug-value">${state.debugData?.mask_source || 'Unknown'}</span>
+            </div>
+            <div class="sp-debug-row">
+              <span class="sp-debug-label">Blend Strength</span>
+              <span class="sp-debug-value">${(state.tuning.blend_strength * 100).toFixed(0)}%</span>
+            </div>
+            <div class="sp-debug-row">
+              <span class="sp-debug-label">Finish Type</span>
+              <span class="sp-debug-value">${state.tuning.finish.charAt(0).toUpperCase() + state.tuning.finish.slice(1)}</span>
+            </div>
+            ${state.maskUrl ? `
+            <div class="sp-debug-row">
+              <span class="sp-debug-label">Mask Opacity</span>
+              <input type="range" id="sp-mask-opacity" min="0" max="1" step="0.1" value="0.5" />
+              <span id="sp-opacity-val">50%</span>
+            </div>
+            ` : ''}
+          </div>
+          ` : ''}
+        </div>
+      `;
 
       // Toggle Logic
       const imgEl = content.querySelector('#sp-result-img') as HTMLImageElement;
+      const maskOverlay = content.querySelector('#sp-mask-overlay') as HTMLImageElement | null;
       const btns = content.querySelectorAll('.sp-toggle-btn');
       btns.forEach(btn => {
         (btn as HTMLButtonElement).onclick = () => {
           btns.forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
           const view = (btn as HTMLButtonElement).dataset.view;
-          if (view === 'original') imgEl.src = state.uploadedImageUrl!;
-          else if (view === 'mask') imgEl.src = state.maskUrl!;
-          else imgEl.src = state.resultUrl!;
+          if (view === 'original') {
+            imgEl.src = state.uploadedImageUrl!;
+            if (maskOverlay) maskOverlay.style.display = 'none';
+          } else if (view === 'mask') {
+            imgEl.src = state.maskUrl!;
+            if (maskOverlay) maskOverlay.style.display = 'none';
+          } else if (view === 'overlay') {
+            imgEl.src = state.uploadedImageUrl!;
+            if (maskOverlay) maskOverlay.style.display = 'block';
+          } else {
+            imgEl.src = state.resultUrl!;
+            if (maskOverlay) maskOverlay.style.display = 'none';
+          }
         };
       });
+
+      // Mask Opacity Slider
+      if (debugMode && state.maskUrl) {
+        const opacitySlider = document.getElementById('sp-mask-opacity') as HTMLInputElement;
+        const opacityVal = document.getElementById('sp-opacity-val');
+        if (opacitySlider && maskOverlay) {
+          opacitySlider.oninput = () => {
+            const val = parseFloat(opacitySlider.value);
+            maskOverlay.style.opacity = val.toString();
+            if (opacityVal) opacityVal.innerText = (val * 100).toFixed(0) + '%';
+          };
+        }
+      }
+
+      // Mask Editing UI
+      if (state.maskUrl) {
+        const editPanel = document.createElement('div');
+        editPanel.className = 'sp-mask-edit-panel';
+        editPanel.innerHTML = `
+          <div class="sp-edit-header">
+            <button class="sp-btn ${state.maskEdit.enabled ? 'primary' : 'secondary'}" id="sp-toggle-edit">
+              ${state.maskEdit.enabled ? '✓ Editing Area' : 'Edit Area'}
+            </button>
+          </div>
+          ${state.maskEdit.enabled ? `
+          <div class="sp-edit-tools">
+            <div class="sp-brush-modes">
+              <button class="sp-brush-btn ${state.maskEdit.mode === 'add' ? 'active' : ''}" data-mode="add">+ Add Epoxy</button>
+              <button class="sp-brush-btn ${state.maskEdit.mode === 'remove' ? 'active' : ''}" data-mode="remove">− Remove</button>
+            </div>
+            <div class="sp-brush-size">
+              <label>Brush</label>
+              <input type="range" id="sp-brush-size" min="5" max="80" value="${state.maskEdit.brushSize}" />
+              <span>${state.maskEdit.brushSize}px</span>
+            </div>
+            <div class="sp-edit-actions">
+              <button class="sp-edit-btn" id="sp-undo" ${state.maskEdit.historyIndex <= 0 ? 'disabled' : ''}>Undo</button>
+              <button class="sp-edit-btn" id="sp-redo" ${state.maskEdit.historyIndex >= state.maskEdit.history.length - 1 ? 'disabled' : ''}>Redo</button>
+              <button class="sp-edit-btn" id="sp-reset-mask">Reset</button>
+            </div>
+            <button class="sp-btn primary" id="sp-apply-mask" style="width:100%; margin-top:8px;">Apply Changes</button>
+          </div>
+          ` : ''}
+        `;
+        content.appendChild(editPanel);
+
+        // Canvas overlay for editing
+        if (state.maskEdit.enabled) {
+          setTimeout(() => initMaskEditor(), 50);
+        }
+
+        // Bind edit panel events
+        setTimeout(() => {
+          const toggleBtn = document.getElementById('sp-toggle-edit');
+          if (toggleBtn) {
+            toggleBtn.onclick = () => {
+              state.maskEdit.enabled = !state.maskEdit.enabled;
+              render();
+            };
+          }
+
+          if (state.maskEdit.enabled) {
+            // Brush mode buttons
+            document.querySelectorAll('.sp-brush-btn').forEach(btn => {
+              (btn as HTMLButtonElement).onclick = () => {
+                state.maskEdit.mode = (btn as HTMLButtonElement).dataset.mode as 'add' | 'remove';
+                render();
+              };
+            });
+
+            // Brush size slider
+            const brushSlider = document.getElementById('sp-brush-size') as HTMLInputElement;
+            if (brushSlider) {
+              brushSlider.oninput = () => {
+                state.maskEdit.brushSize = parseInt(brushSlider.value);
+                const span = brushSlider.nextElementSibling;
+                if (span) span.textContent = state.maskEdit.brushSize + 'px';
+              };
+            }
+
+            // Undo/Redo
+            const undoBtn = document.getElementById('sp-undo');
+            const redoBtn = document.getElementById('sp-redo');
+            if (undoBtn) undoBtn.onclick = undoMaskEdit;
+            if (redoBtn) redoBtn.onclick = redoMaskEdit;
+
+            // Reset
+            const resetBtn = document.getElementById('sp-reset-mask');
+            if (resetBtn) resetBtn.onclick = resetMaskToAuto;
+
+            // Apply
+            const applyBtn = document.getElementById('sp-apply-mask');
+            if (applyBtn) applyBtn.onclick = applyMaskAndRender;
+          }
+        }, 0);
+      }
 
       const actions = document.createElement('div');
       actions.className = 'sp-actions';
@@ -316,6 +489,10 @@ async function initWidget() {
         state.uploadedImage = null;
         state.maskUrl = null;
         state.debugData = null;
+        state.maskEdit.enabled = false;
+        state.maskEdit.history = [];
+        state.maskEdit.historyIndex = -1;
+        state.maskEdit.customMaskData = null;
         render();
       };
       const downloadBtn = document.createElement('a');
@@ -328,6 +505,139 @@ async function initWidget() {
       actions.appendChild(downloadBtn);
       content.appendChild(actions);
     }
+  }
+
+  // --- Mask Editor Functions ---
+
+  function initMaskEditor() {
+    const container = document.getElementById('sp-img-container');
+    const baseImg = document.getElementById('sp-result-img') as HTMLImageElement;
+    if (!container || !baseImg) return;
+
+    // Remove existing canvas
+    let canvas = document.getElementById('sp-mask-canvas') as HTMLCanvasElement;
+    if (canvas) canvas.remove();
+
+    // Create canvas
+    canvas = document.createElement('canvas');
+    canvas.id = 'sp-mask-canvas';
+    canvas.className = 'sp-mask-canvas';
+    canvas.width = baseImg.naturalWidth || baseImg.width || 400;
+    canvas.height = baseImg.naturalHeight || baseImg.height || 300;
+    canvas.style.width = '100%';
+    canvas.style.height = 'auto';
+    container.appendChild(canvas);
+
+    const ctx = canvas.getContext('2d')!;
+    state.maskEdit.canvas = canvas;
+    state.maskEdit.ctx = ctx;
+
+    // Load existing mask as background
+    if (state.maskUrl) {
+      const maskImg = new Image();
+      maskImg.crossOrigin = 'anonymous';
+      maskImg.onload = () => {
+        ctx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+        saveToHistory();
+      };
+      maskImg.src = state.maskUrl;
+    } else {
+      // White = full epoxy
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      saveToHistory();
+    }
+
+    // Drawing state
+    let isDrawing = false;
+
+    canvas.onmousedown = (e) => { isDrawing = true; draw(e); };
+    canvas.onmousemove = (e) => { if (isDrawing) draw(e); };
+    canvas.onmouseup = () => { if (isDrawing) { isDrawing = false; saveToHistory(); } };
+    canvas.onmouseleave = () => { if (isDrawing) { isDrawing = false; } };
+
+    // Touch support
+    canvas.ontouchstart = (e) => { isDrawing = true; drawTouch(e); e.preventDefault(); };
+    canvas.ontouchmove = (e) => { if (isDrawing) { drawTouch(e); e.preventDefault(); } };
+    canvas.ontouchend = () => { if (isDrawing) { isDrawing = false; saveToHistory(); } };
+
+    function draw(e: MouseEvent) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const x = (e.clientX - rect.left) * scaleX;
+      const y = (e.clientY - rect.top) * scaleY;
+      brush(x, y);
+    }
+
+    function drawTouch(e: TouchEvent) {
+      const touch = e.touches[0];
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const x = (touch.clientX - rect.left) * scaleX;
+      const y = (touch.clientY - rect.top) * scaleY;
+      brush(x, y);
+    }
+
+    function brush(x: number, y: number) {
+      ctx.beginPath();
+      ctx.arc(x, y, state.maskEdit.brushSize, 0, Math.PI * 2);
+      ctx.fillStyle = state.maskEdit.mode === 'add' ? 'white' : 'black';
+      ctx.fill();
+    }
+  }
+
+  function saveToHistory() {
+    if (!state.maskEdit.canvas || !state.maskEdit.ctx) return;
+    const imageData = state.maskEdit.ctx.getImageData(
+      0, 0,
+      state.maskEdit.canvas.width,
+      state.maskEdit.canvas.height
+    );
+    // Truncate future history
+    state.maskEdit.history = state.maskEdit.history.slice(0, state.maskEdit.historyIndex + 1);
+    state.maskEdit.history.push(imageData);
+    state.maskEdit.historyIndex = state.maskEdit.history.length - 1;
+  }
+
+  function undoMaskEdit() {
+    if (state.maskEdit.historyIndex > 0 && state.maskEdit.ctx) {
+      state.maskEdit.historyIndex--;
+      state.maskEdit.ctx.putImageData(state.maskEdit.history[state.maskEdit.historyIndex], 0, 0);
+      render();
+    }
+  }
+
+  function redoMaskEdit() {
+    if (state.maskEdit.historyIndex < state.maskEdit.history.length - 1 && state.maskEdit.ctx) {
+      state.maskEdit.historyIndex++;
+      state.maskEdit.ctx.putImageData(state.maskEdit.history[state.maskEdit.historyIndex], 0, 0);
+      render();
+    }
+  }
+
+  function resetMaskToAuto() {
+    if (!state.maskEdit.canvas || !state.maskEdit.ctx || !state.maskUrl) return;
+    const ctx = state.maskEdit.ctx;
+    const canvas = state.maskEdit.canvas;
+    const maskImg = new Image();
+    maskImg.crossOrigin = 'anonymous';
+    maskImg.onload = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(maskImg, 0, 0, canvas.width, canvas.height);
+      saveToHistory();
+    };
+    maskImg.src = state.maskUrl;
+  }
+
+  async function applyMaskAndRender() {
+    if (!state.maskEdit.canvas) return;
+    // Export canvas as base64
+    state.maskEdit.customMaskData = state.maskEdit.canvas.toDataURL('image/png');
+    state.maskEdit.enabled = false;
+    // Re-render with custom mask
+    performRender();
   }
 
   // --- Logic ---
@@ -378,9 +688,39 @@ async function initWidget() {
         formData.append('style_id', state.selectedStyleId);
       }
 
+      // Pass Tuning Params
+      formData.append('blend_strength', state.tuning.blend_strength.toString());
+      formData.append('finish', state.tuning.finish);
+
       // Pass Debug Flag
       if (debugMode) {
         formData.append('debug', 'true');
+      }
+
+      // Pass Custom Mask
+      if (state.maskEdit.customMaskData) {
+        formData.append('custom_mask', state.maskEdit.customMaskData);
+      }
+
+      // Pass Project ID (from API key)
+      // API Key format: proj_{projectId_last8}
+      // But we need the full UUID?
+      // Wait, the API Key (X-API-KEY) validates the project in deps.
+      // But epoxy.py needs project_id to look up config.
+      // The deps.get_project_from_api_key puts the project in request.state?
+      // No... epoxy.py takes project_id as Form param.
+      // We don't have the full UUID in the widget usually. the apiKey variable might be the JWT token or the short key.
+
+      // Attempt to extract project_id if it was passed in init config
+      // But we didn't save it in state. Let's look at initWidget.
+      // The script tag usually has data-project-id.
+
+      const scriptEl = document.getElementById('skisplace-config') || document.querySelector('script[src*="widget.js"]');
+      const projectId = scriptEl?.getAttribute('data-project-id');
+      if (projectId) {
+        formData.append('project_id', projectId);
+      } else {
+        console.warn("SkisPlace: data-project-id not found, AI config may not load.");
       }
 
       // Call /epoxy/preview
