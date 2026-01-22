@@ -1,19 +1,28 @@
-import shutil
+import asyncio
 import os
+import shutil
 import uuid
 from typing import Any, List
-from fastapi import APIRouter, UploadFile, File, Form, Request, HTTPException, Depends, Body
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from pydantic import BaseModel
 
 from app.api import deps
-from app.db.session import AsyncSessionLocal
-from app.models import EpoxyStyle
-from app.api.endpoints.styles import _map_to_response, EpoxyStyleResponse
+from app.api.endpoints.styles import EpoxyStyleResponse, _map_to_response
 from app.core.engine import process_image
+from app.models import EpoxyStyle
 
 router = APIRouter()
 
@@ -160,7 +169,9 @@ async def create_preview_job(
                  params["color"] = "#a1a1aa" 
 
             # Call engine with debug flag
-            result = process_image(input_path, output_path, params, debug=debug)
+            result = await asyncio.to_thread(
+                process_image, input_path, output_path, params, debug=debug
+            )
             
             # Handle result dict
             process_success = result.get("success", False)
