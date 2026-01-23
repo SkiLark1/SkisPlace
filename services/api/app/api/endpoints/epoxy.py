@@ -43,6 +43,38 @@ class PreviewResponse(BaseModel):
 
 # --- Endpoints ---
 
+# Mission 11: Helper to ensure module config exists
+async def _ensure_epoxy_module(db: AsyncSession, project_id: uuid.UUID):
+    # Check if exists
+    query = select(ProjectModule).join(Module).where(ProjectModule.project_id == project_id, Module.name == "Epoxy Visualizer")
+    result = await db.execute(query)
+    pm = result.scalar_one_or_none()
+    
+    if not pm:
+        # Create it
+        # Find module def
+        mod_res = await db.execute(select(Module).where(Module.name == "Epoxy Visualizer"))
+        module_def = mod_res.scalar_one_or_none()
+        if module_def:
+             print(f"DEBUG: Cold Start - Creating missing Epoxy ProjectModule for {project_id}")
+             # Ensure defaults exist
+             defaults = module_def.default_config or {}
+             # Add AI params if missing (double check)
+             if "ai_segmentation" not in defaults:
+                 defaults["ai_segmentation"] = {"enabled": True, "provider": "local_segmentation", "auto_mask": True}
+                 
+             pm = ProjectModule(
+                 project_id=project_id,
+                 module_id=module_def.id,
+                 config=defaults,
+                 is_enabled=True
+             )
+             db.add(pm)
+             await db.commit()
+             await db.refresh(pm)
+    return pm
+
+
 @router.get("/styles/public", response_model=List[EpoxyStyleResponse])
 async def get_public_styles(
     request: Request,
@@ -64,8 +96,37 @@ async def get_public_styles(
         
         if project_styles:
             styles = project_styles
+        else:
+            # MISSION 12: Auto-Import System Defaults
+            # If project has 0 styles, copy system defaults to project
+            print(f"DEBUG: Project {project.id} has 0 styles. Auto-importing system defaults.")
+            
+            sys_query = select(EpoxyStyle).where(EpoxyStyle.is_system == True).options(selectinload(EpoxyStyle.cover_image))
+            sys_res = await db.execute(sys_query)
+            sys_styles = sys_res.scalars().all()
+            
+            new_styles = []
+            for ss in sys_styles:
+                ns = EpoxyStyle(
+                   id=uuid.uuid4(),
+                   project_id=project.id,
+                   name=ss.name,
+                   category=ss.category,
+                   is_system=False,
+                   parameters=ss.parameters,
+                   # Share image asset if possible, or leave null if system styles use raw urls
+                   cover_image_id=ss.cover_image_id 
+                )
+                db.add(ns)
+                new_styles.append(ns)
+            
+            if new_styles:
+                await db.commit()
+                # Use the new styles
+                styles = new_styles
 
-    # 2. Fallback to System Defaults
+    # 2. Fallback to System Defaults (Read Only)
+    # If not authenticated OR auto-import failed/yielded nothing
     if not styles:
         query = select(EpoxyStyle).where(
             EpoxyStyle.project_id == None,
@@ -73,6 +134,20 @@ async def get_public_styles(
         ).options(selectinload(EpoxyStyle.cover_image))
         result = await db.execute(query)
         styles = result.scalars().all()
+
+    # 3. MISSION 12: Hard Guardrail
+    if not styles:
+        print("CRITICAL: No styles found (Project or System). Returning Emergency Fallback.")
+        # Return a dummy object that mimics EpoxyStyle
+        # We need it to match response schema
+        emergency_style = EpoxyStyle(
+            id=uuid.uuid4(),
+            name="Emergency Default",
+            category="System",
+            parameters={"color": "#888888"},
+            is_system=True
+        )
+        styles = [emergency_style]
 
     return [_map_to_response(s) for s in styles]
 
@@ -87,6 +162,10 @@ async def get_public_config(
     """
     if not project:
         return {}
+        
+    # MISSION 11: Cold Start Proof
+    # Ensure module config exists before querying
+    await _ensure_epoxy_module(db, project.id)
 
     # Find Epoxy Visualizer module for this project
     query = (
@@ -158,6 +237,14 @@ async def create_preview_job(
         project_id = str(project_from_key.id)
 
     print(f"DEBUG: Epoxy Preview Request. ProjectID={project_id}, StyleID={style_id}")
+
+    # Mission 11: Cold Start - Ensure AI config exists
+    if project_id:
+        try:
+             pid_uuid = uuid.UUID(project_id)
+             await _ensure_epoxy_module(db, pid_uuid)
+        except Exception as cx:
+             print(f"WARN: Failed to ensure module config in preview: {cx}")
 
     try:
         # 0. Fetch Style
@@ -251,6 +338,11 @@ async def create_preview_job(
             params = style.parameters if style.parameters else {}
             if "color" not in params:
                  params["color"] = "#a1a1aa" 
+            
+            # Mission 25: Pass Category for Tone Mapping
+            params["style_category"] = style.category
+            if not params["style_category"]:
+                 params["style_category"] = "flake" # Default
 
             # Call engine with debug flag and AI config
             result = process_image(input_path, output_path, params, debug=debug, custom_mask=custom_mask, ai_config=ai_config, texture_path=texture_path)

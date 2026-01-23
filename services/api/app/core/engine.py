@@ -442,57 +442,87 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
             traceback.print_exc()
 
     
+    # A. Extract Lighting (Luminance) - Mission 23
+    # We want lighting (shadows/gradients) but NOT albedo (stains/lines).
+    # Use Frequency Separation approach: Lighting is Low Frequency.
+    grayscale = original.convert("L")
+    
+    # Blur to remove high-frequency details (stains, lines)
+    # Radius depends on resolution. 15px is good heuristic for 1000px wide.
+    # Dynamic radius: 1.5% of width
+    blur_rad = max(5, int(width * 0.015))
+    lighting_map = grayscale.filter(ImageFilter.GaussianBlur(radius=blur_rad))
+    
+    # Normalize Lighting (Mission 24/25 - Tone Mapping)
+    # Adaptive Shadow Lift based on Material Category
+    # Flake needs flat/bright lighting to show texture.
+    # Metallic needs deep contrasts (liquid look).
+    category = parameters.get("style_category", "flake").lower()
+    
+    lifts = {
+        "metallic": 30, # Deep shadows
+        "quartz": 70,   # Balanced
+        "flake": 80,    # Bright shadows (visibility)
+    }
+    shadow_lift = lifts.get(category, 64)
+    
+    scale = (255.0 - shadow_lift) / 255.0
+    
+    def normalize_lighting(p):
+        # Linear compression: lifts black from 0 to shadow_lift
+        return int(p * scale + shadow_lift)
+    
+    lighting_map = lighting_map.point(normalize_lighting)
+    
+    # Optional: Gamma from params
+    if gamma != 1.0 and gamma > 0:
+        inv_gamma = 1.0 / gamma 
+        lut = [int(((i / 255.0) ** inv_gamma) * 255) for i in range(256)]
+        lighting_map = lighting_map.point(lut)
+
+    lighting_rgba = lighting_map.convert("RGBA")
+    
+    # B. Create Color/Texture Layer (Already done above in base_layer)
     if base_layer is None:
         base_layer = Image.new("RGBA", (width, height), color_hex)
     
-    # C. Multiply Blend
-    blended_texture = ImageChops.multiply(base_layer, grayscale_rgba)
+    # C. Multiply Blend (Apply Lighting to Texture)
+    # Texture * Lighting
+    blended_texture = ImageChops.multiply(base_layer, lighting_rgba)
     
     # D. Brightness/Boost
+    # Boost contrast/brightness of the final surface
     enhancer = ImageEnhance.Brightness(blended_texture)
     epoxy_base = enhancer.enhance(brightness_boost)
 
     # E. Specular Highlights (Optional)
     # Gated by finish.
     if finish in ["gloss", "satin"]:
-        # Extract highlights from original grayscale
-        # Threshold: Only take pixels > X
+        # Extract highlights from original grayscale (Sharp reflections)
+        # We WANT sharp reflections (high freq), so use original grayscale.
         threshold = 180 if finish == "gloss" else 200
         
-        # Create a mask for highlights
-        # 1. Take grayscale
-        # 2. Point op to zero out below threshold
         def highlight_filter(p):
             return p if p > threshold else 0
             
         highlight_map = grayscale.point(highlight_filter)
         
-        # Blur the highlights to make them "bloom"
         blur_radius = 10 if finish == "gloss" else 20
         highlight_overlay = highlight_map.filter(ImageFilter.GaussianBlur(radius=blur_radius)).convert("RGBA")
         
-        # Add highlights to epoxy_base using Screen or Add
-        # Screen is safer (doesn't clip as harshly)
+        # Add highlights
         epoxy_base = ImageChops.screen(epoxy_base, highlight_overlay)
 
-    # F. Blend Strength (Opacity of the Epoxy Effect)
-    # We blend the "Epoxy Result" with the "Original Image" (Unmodified)
-    # HOWEVER, we only want to affect the area within the MASK.
-    # So we calculate the Full Epoxy Layer, then Composite.
-    # BUT, if blend_strength < 1.0, the "Epoxy Layer" itself should be partially transparent 
-    # revealing the original floor underneath, BEFORE masking.
-    
+    # F. Blend Strength (Opacity)
     if blend_strength < 1.0:
-        # Interpolate between Original and EpoxyBase
-        # We need original as RGBA
         epoxy_base = Image.blend(original, epoxy_base, blend_strength)
 
     # 4. Composite
-    # Result = Original * (1-Mask) + EpoxyBase * Mask
+    # Replace floor pixels with lit texture
     result = Image.composite(epoxy_base, original, mask)
     
     # 5. Save
-    result.convert("RGB").save(output_path, quality=85)
+    result.convert("RGB").save(output_path, quality=90)
     
     result_info["success"] = True
     return result_info

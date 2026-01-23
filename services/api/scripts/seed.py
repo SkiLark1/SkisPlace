@@ -55,7 +55,15 @@ async def seed_data():
             {
                 "name": "Epoxy Visualizer", 
                 "description": "Upload a room photo and preview epoxy finishes",
-                "default_config": {"theme": "light", "maxRendersPerDay": 50}
+                "default_config": {
+                    "theme": "light", 
+                    "maxRendersPerDay": 50,
+                    "ai_segmentation": {
+                        "enabled": True,
+                        "provider": "local_segmentation",
+                        "auto_mask": True
+                    }
+                }
             },
             {
                 "name": "Hello Widget",
