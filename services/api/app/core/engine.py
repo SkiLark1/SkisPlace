@@ -2,11 +2,24 @@ import os
 import base64
 import io
 from PIL import Image, ImageEnhance, ImageOps, ImageDraw, ImageFilter, ImageChops
+import numpy as np
+
+def find_coeffs(source_coords, target_coords):
+    """ Calculate perspective transform coefficients. """
+    matrix = []
+    for s, t in zip(source_coords, target_coords):
+        matrix.append([t[0], t[1], 1, 0, 0, 0, -s[0]*t[0], -s[0]*t[1]])
+        matrix.append([0, 0, 0, t[0], t[1], 1, -s[1]*t[0], -s[1]*t[1]])
+    A = np.matrix(matrix, dtype=np.float64)
+    B = np.array(source_coords).reshape(8)
+    res = np.dot(np.linalg.inv(A.T * A) * A.T, B)
+    return np.array(res).reshape(8)
+
 
 from app.core.segmentation import FloorSegmenter
 from app.core.geometry import detect_camera_geometry
 
-def process_image(input_path: str, output_path: str, parameters: dict, debug: bool = False, custom_mask: str | None = None, ai_config: dict | None = None) -> dict:
+def process_image(input_path: str, output_path: str, parameters: dict, debug: bool = False, custom_mask: str | None = None, ai_config: dict | None = None, texture_path: str | None = None) -> dict:
     """
     Process the image to apply a simulated epoxy finish.
     
@@ -19,16 +32,14 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
             - gamma: 0.1 to 5.0 (default 1.0). Adjusts contrast of floor texture under epoxy.
             - brightness_boost: Multiplier (default 1.8). Replaces old hardcoded 1.8.
             - finish: 'gloss', 'satin', 'matte' (default 'gloss').
+            - scale: Texture scale (default 1.0).
         debug: If True, saves intermediate assets (like mask) and returns their paths.
         custom_mask: Base64 string of user-drawn mask.
         ai_config: Configuration for AI segmentation.
-            - enabled: bool
-            - confidence_threshold: float
-
-    Returns:
-        dict: {"success": bool, "mask_filename": str|None, "message": str, "mask_source": str}
+        texture_path: Optional path to texture image (overrides color).
     """
     result_info = {"success": False, "mask_filename": None, "message": "", "mask_source": "heuristic", "camera_geometry": "unknown"}
+
 
     # 1. Load Image
     try:
@@ -41,9 +52,13 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
     width, height = original.size
     
     # Analyze Geometry
-    geometry = detect_camera_geometry(original, debug=True)
-    result_info["camera_geometry"] = geometry
-    print(f"DEBUG: Detected Camera Geometry: {geometry}")
+    # Analyze Geometry (Returns dict)
+    geometry_res = detect_camera_geometry(original, debug=True)
+    geometry_type = geometry_res["type"]
+    horizon_pct = geometry_res["horizon"]
+    
+    result_info["camera_geometry"] = geometry_type
+    print(f"DEBUG: Detected Camera Geometry: {geometry_type} (Horizon: {horizon_pct:.2f})")
     
 
     # 2. Generate Mask
@@ -78,54 +93,90 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
             # Fallback to heuristic
             mask = None
 
-    # B. Base Heuristic Mask (If no user mask)
+    # ========================================================================
+    # CANONICAL MASK DECISION PIPELINE
+    # Priority: 1) User Mask  2) AI Mask  3) Heuristic Mask
+    # NO intersections, unions, or post-threshold modifications to AI mask.
+    # ========================================================================
+    
     if mask is None:
-        result_info["mask_source"] = "heuristic"
-        mask_source = "heuristic"
+        # Not a user mask, try AI first, then heuristic
         
-        # Geometry-Aware Base
-        is_top_down = result_info.get("camera_geometry") == "top_down"
+        # --- STEP 1: TRY AI MASK ---
+        ai_mask = None
+        ai_coverage = 0.0
+        ai_fallback_reason = None
+        MIN_COVERAGE = 0.15  # 15% minimum coverage threshold
         
-        if is_top_down:
-            # Top-Down: AI-first strategy (NOT full white)
-            print("DEBUG: Top-Down geometry detected - using AI-first strategy")
-            ai_mask_used = False
-            
-            # Try AI mask directly for top-down
-            if ai_config and ai_config.get("enabled", False):
-                try:
-                    geometry_hint = "top_down"
-                    # Check if AI model is actually loaded
-                    segmenter = FloorSegmenter.instance()
-                    if not segmenter.session:
-                        print(f"DEBUG: AI Model NOT loaded (path: {segmenter.model_path})")
-                    else:
-                        # Use stricter threshold for top-down
-                        min_floor_prob = float(ai_config.get("min_floor_prob", 0.4))
-                        prob_map = segmenter.get_probability_map(original, geometry_hint=geometry_hint)
+        if ai_config and ai_config.get("enabled", False):
+            try:
+                segmenter = FloorSegmenter.instance()
+                if segmenter.session:
+                    import numpy as np
+                    
+                    # Get AI binary mask (thresholded at model resolution, resized with NEAREST)
+                    geometry_hint = result_info.get("camera_geometry", "unknown")
+                    threshold = float(ai_config.get("ai_threshold", 0.4))
+                    morphology = ai_config.get("morphology_cleanup", True)
+                    
+                    print(f"DEBUG: AI Threshold: {threshold}, Morphology: {morphology}")
+                    
+                    # Use new get_binary_mask - thresholds at 512x512, resizes with NEAREST
+                    ai_mask = segmenter.get_binary_mask(
+                        original, 
+                        threshold=threshold, 
+                        geometry_hint=geometry_hint,
+                        morphology_cleanup=morphology
+                    )
+                    
+                    if ai_mask:
+                        # Calculate coverage
+                        ai_arr = np.array(ai_mask)
+                        white_pixels = np.sum(ai_arr > 127)
+                        ai_coverage = white_pixels / ai_arr.size if ai_arr.size > 0 else 0.0
                         
-                        if prob_map:
-                            import numpy as np
-                            # Apply stricter threshold for top-down
-                            threshold_255 = int(min_floor_prob * 255)
-                            print(f"DEBUG: Top-Down AI - Using min_floor_prob threshold: {min_floor_prob} ({threshold_255}/255)")
-                            mask = prob_map.point(lambda p: 255 if p >= threshold_255 else 0)
-                            result_info["mask_source"] = "ai_direct"
-                            ai_mask_used = True
-                            print("DEBUG: Top-Down AI mask applied directly")
-                except Exception as e:
-                    print(f"DEBUG: Top-Down AI mask failed: {e}")
+                        print(f"DEBUG: AI Mask Coverage: {ai_coverage*100:.1f}%")
+                        
+                        if ai_coverage < MIN_COVERAGE:
+                            ai_fallback_reason = f"coverage_too_low ({ai_coverage*100:.1f}% < {MIN_COVERAGE*100:.1f}%)"
+                    else:
+                        ai_fallback_reason = "get_binary_mask returned None"
+                else:
+                    ai_fallback_reason = f"model_not_loaded (path: {segmenter.model_path})"
+                    print(f"DEBUG: AI Model NOT loaded (path: {segmenter.model_path})")
+            except Exception as e:
+                ai_fallback_reason = f"exception: {str(e)}"
+                print(f"ERROR: AI mask generation failed: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            ai_fallback_reason = "ai_disabled" if ai_config else "no_ai_config"
+        
+        # --- STEP 2: DECIDE: AI vs HEURISTIC (NO HYBRID) ---
+        if ai_mask is not None and ai_coverage >= MIN_COVERAGE:
+            # USE AI MASK - fully applies, no blending
+            mask = ai_mask
+            mask_source = "ai"
+            result_info["mask_source"] = "ai"
+            print(f"DEBUG: ✓ Using AI mask (coverage {ai_coverage*100:.1f}% >= {MIN_COVERAGE*100:.1f}%)")
+        else:
+            # USE HEURISTIC MASK - full fallback, no blending
+            mask_source = "heuristic"
+            result_info["mask_source"] = "heuristic"
+            result_info["ai_fallback_reason"] = ai_fallback_reason
+            print(f"DEBUG: ✗ AI fallback → heuristic. Reason: {ai_fallback_reason}")
             
-            # Fallback: Center-weighted vignette (not full white)
-            if not ai_mask_used:
-                print("DEBUG: Top-Down fallback - using center-weighted vignette")
+            # Geometry-Aware Heuristic
+            is_top_down = result_info.get("camera_geometry") == "top_down"
+            
+            if is_top_down:
+                # Top-Down: Center-weighted vignette
+                print("DEBUG: Generating heuristic vignette mask for top-down")
                 mask = Image.new("L", (width, height), 255)
                 draw = ImageDraw.Draw(mask)
                 
-                # Create vignette: fade to 0 near edges
-                border_pct = 0.08  # 8% border kill zone
-                fade_pct = 0.12   # 12% fade zone
-                
+                border_pct = 0.08
+                fade_pct = 0.12
                 border_x = int(width * border_pct)
                 border_y = int(height * border_pct)
                 fade_x = int(width * fade_pct)
@@ -140,7 +191,7 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                     draw.line((x, 0, x, height), fill=alpha)
                     draw.line((width - 1 - x, 0, width - 1 - x, height), fill=alpha)
                 
-                # Vertical edge suppression (multiply with existing)
+                # Vertical edge suppression
                 v_mask = Image.new("L", (width, height), 255)
                 v_draw = ImageDraw.Draw(v_mask)
                 for y in range(border_y + fade_y):
@@ -152,115 +203,31 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                     v_draw.line((0, height - 1 - y, width, height - 1 - y), fill=alpha)
                 
                 mask = ImageChops.multiply(mask, v_mask)
-                result_info["mask_source"] = "heuristic_vignette"
-        else:
-            # Eye-Level: Vertical Gradient
-            mask_start = float(parameters.get("mask_start", 0.45))
-            mask_end = float(parameters.get("mask_end", 1.0))
-            mask_falloff = float(parameters.get("mask_falloff", 1.0))
-            
-            mask = Image.new("L", (width, height), 0)
-            draw = ImageDraw.Draw(mask)
-            
-            start_y = int(height * mask_start)
-            end_y = int(height * mask_end)
-            
-            if end_y > start_y:
-                for y in range(start_y, height):
-                    if y >= end_y:
-                        t = 1.0
-                    else:
-                        t = (y - start_y) / (end_y - start_y)
-                    
-                    alpha_val = int(255 * (t ** mask_falloff))
-                    draw.line((0, y, width, y), fill=alpha_val)
-
-    # C. AI Refinement (If enabled and not user mask)
-    # Skip if mask_source is already AI-based (ai_direct, etc.)
-    if mask_source == "heuristic" or mask_source == "heuristic_vignette":
-        if ai_config and ai_config.get("enabled", False):
-            try:
-                import numpy as np
-                from scipy import ndimage
+            else:
+                # Eye-Level: Vertical gradient
+                print("DEBUG: Generating heuristic gradient mask for eye-level")
+                mask_start = float(parameters.get("mask_start", 0.45))
+                mask_end = float(parameters.get("mask_end", 1.0))
+                mask_falloff = float(parameters.get("mask_falloff", 1.0))
                 
-                confidence = float(ai_config.get("confidence_threshold", 0.5))
+                mask = Image.new("L", (width, height), 0)
+                draw = ImageDraw.Draw(mask)
                 
-                # Geometry-aware min_floor_prob_to_keep threshold
-                geometry_hint = result_info.get("camera_geometry", "unknown")
-                is_top_down = geometry_hint == "top_down"
+                start_y = int(height * mask_start)
+                end_y = int(height * mask_end)
                 
-                # Stricter threshold for top-down to prevent over-prediction
-                default_min_floor_prob = 0.45 if is_top_down else 0.25
-                min_floor_prob = float(ai_config.get("min_floor_prob_to_keep", default_min_floor_prob))
-                
-                print(f"DEBUG: Attempting AI Refinement. Removal Confidence: {confidence}, Min Floor Prob: {min_floor_prob} (geometry: {geometry_hint})")
-                
-                # Get raw probability map (0-255) - Pass geometry hint for letterbox/squash selection
-                prob_map = FloorSegmenter.instance().get_probability_map(original, geometry_hint=geometry_hint)
-                
-                if prob_map:
-                    # Calculate keep threshold: max of confidence-based and min_floor_prob
-                    confidence_threshold_255 = int((1.0 - confidence) * 255)
-                    min_floor_threshold_255 = int(min_floor_prob * 255)
-                    
-                    # Use the STRICTER (higher) of the two thresholds
-                    keep_threshold = max(confidence_threshold_255, min_floor_threshold_255)
-                    keep_threshold = max(1, min(254, keep_threshold))
-                
-                    print(f"DEBUG: AI Refinement - Keeping pixels with Floor Prob >= {keep_threshold}/255")
-                    
-                    # Create binary refinement mask: White = Keep, Black = Remove
-                    refinement_mask = prob_map.point(lambda p: 255 if p >= keep_threshold else 0)
-                    
-                    # --- SANITY CHECK ---
-                    ai_arr = np.array(refinement_mask)
-                    total_pixels = ai_arr.size
-                    white_pixels = np.sum(ai_arr > 127)
-                    coverage = white_pixels / total_pixels if total_pixels > 0 else 0.0
-                    
-                    print(f"DEBUG: AI Mask Coverage: {coverage*100:.1f}%")
-                    
-                    # Coverage Thresholds
-                    MIN_COVERAGE = 0.08  # 8%
-                    
-                    if coverage < MIN_COVERAGE:
-                        # AI mask is too small - use Hybrid Fallback
-                        print(f"DEBUG: AI coverage too low ({coverage*100:.1f}% < {MIN_COVERAGE*100:.1f}%). Using Hybrid Fallback (Union).")
-                        
-                        # Hybrid = Union of heuristic base and AI mask
-                        base_arr = np.array(mask)
-                        combined_arr = np.maximum(base_arr, ai_arr)
-                        mask = Image.fromarray(combined_arr.astype(np.uint8), mode="L")
-                        result_info["mask_source"] = "ai_hybrid_fallback"
-                    else:
-                        # Apply AI refinement normally
-                        # First, Apply Largest Connected Component Filter
-                        binary_mask = (ai_arr > 127).astype(np.uint8)
-                        labeled, num_features = ndimage.label(binary_mask)
-                        
-                        if num_features > 1:
-                            component_sizes = ndimage.sum(binary_mask, labeled, range(1, num_features + 1))
-                            largest_label = np.argmax(component_sizes) + 1
-                            binary_mask = (labeled == largest_label).astype(np.uint8)
-                            refinement_mask = Image.fromarray((binary_mask * 255).astype(np.uint8), mode="L")
-                            print(f"DEBUG: Connected Component Filter: Kept largest of {num_features} regions.")
-                        
-                        # Combine: Final = Base * Refinement
-                        mask = ImageChops.multiply(mask, refinement_mask)
-                        result_info["mask_source"] = "ai_refined"
-                        
-                    print("DEBUG: AI Refinement step complete")
-                else:
-                    print("DEBUG: AI Segmentation returned no probability map")
-            except Exception as e:
-                print(f"ERROR: AI Refinement failed: {e}")
-                import traceback
-                traceback.print_exc()
+                if end_y > start_y:
+                    for y in range(start_y, height):
+                        if y >= end_y:
+                            t = 1.0
+                        else:
+                            t = (y - start_y) / (end_y - start_y)
+                        alpha_val = int(255 * (t ** mask_falloff))
+                        draw.line((0, y, width, y), fill=alpha_val)
 
     # D. Edge Feathering (Geometry & Source Aware)
-    # Apply feathering if it's Eye-Level AND (Heuristic OR AI-Refined)
-    # Don't feather Top-Down or Custom User masks.
-    should_feather = (result_info.get("camera_geometry") != "top_down") and (result_info.get("mask_source") != "user")
+    # Only feather heuristics. AI and User masks should be sharp.
+    should_feather = (result_info.get("camera_geometry") != "top_down") and (result_info.get("mask_source") == "heuristic")
     
     if width > 0 and should_feather:
         h_mask = Image.new("L", (width, height), 255)
@@ -336,11 +303,82 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
 
     grayscale_rgba = grayscale.convert("RGBA")
     
-    # B. Create Color Layer
-    color_layer = Image.new("RGBA", (width, height), color_hex)
+    # B. Create Color/Texture Layer
+    base_layer = None
+    
+    if texture_path and os.path.exists(texture_path):
+        try:
+            texture = Image.open(texture_path).convert("RGBA")
+            t_width, t_height = texture.size
+            if t_width > 0 and t_height > 0:
+                # Use Tiling with Overscan for Perspective
+                # We create a much wider buffer to handle the perspective frustum (fan out)
+                # without leaving black voids at the top (horizon).
+                
+                overscan = 10 
+                t_canvas_width = width * overscan
+                base_layer = Image.new("RGBA", (t_canvas_width, height))
+                
+                # Tile texture across the huge canvas
+                # Use Staggered Grid (Running Bond) to avoid horizontal lines/seams alignment
+                repeats_x = (t_canvas_width // t_width) + 1
+                repeats_y = (height // t_height) + 2
+                
+                for ix in range(repeats_x):
+                    # Stagger odd columns by half height to break horizontal grid lines
+                    y_shift = (t_height // 2) if (ix % 2 == 1) else 0
+                    
+                    for iy in range(repeats_y):
+                        px = ix * t_width
+                        py = (iy * t_height) - y_shift
+                        
+                        # Clip check not needed, paste handles it
+                        base_layer.paste(texture, (px, py))
+                
+                print(f"DEBUG: Applied texture from {texture_path} (Overscan: {overscan}x)")
+                
+                # Apply Perspective Transform if Eye Level
+                if result_info.get("camera_geometry") == "eye_level":
+                    print("DEBUG: Applying perspective warp to texture")
+                    
+                    # Define Horizon (Top of trapezoid)
+                    h_y = int(height * horizon_pct)
+                    
+                    center_x = width / 2
+                    
+                    # Dest Top (at horizon)
+                    dt_w = width * 4.0 
+                    dest_tl = (center_x - dt_w/2, h_y)
+                    dest_tr = (center_x + dt_w/2, h_y)
+                    
+                    # Dest Bottom (at bottom)
+                    # Needs to be wider to create convergence
+                    db_w = dt_w * 3.5 
+                    dest_bl = (center_x - db_w/2, height)
+                    dest_br = (center_x + db_w/2, height)
+                    
+                    dest_points = [dest_tl, dest_tr, dest_br, dest_bl]
+                    source_points = [(0, 0), (t_canvas_width, 0), (t_canvas_width, height), (0, height)]
+                    
+                    coeffs = find_coeffs(source_points, dest_points)
+                    
+                    # Transform (Sample from the 10x buffer)
+                    warped = base_layer.transform((width, height), Image.PERSPECTIVE, coeffs, Image.Resampling.BICUBIC)
+                    
+                    base_layer = warped
+
+                    
+        except Exception as e:
+            print(f"ERROR: Failed to load texture: {e}")
+            import traceback
+            traceback.print_exc()
+
+    
+    if base_layer is None:
+        base_layer = Image.new("RGBA", (width, height), color_hex)
     
     # C. Multiply Blend
-    blended_texture = ImageChops.multiply(color_layer, grayscale_rgba)
+    blended_texture = ImageChops.multiply(base_layer, grayscale_rgba)
     
     # D. Brightness/Boost
     enhancer = ImageEnhance.Brightness(blended_texture)

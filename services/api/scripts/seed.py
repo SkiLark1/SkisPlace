@@ -99,7 +99,7 @@ async def seed_data():
             },
              {
                 "name": "Industrial Grey", 
-                "category": "Solid", 
+                "category": "Quartz", 
                 "is_system": True,
                 "parameters": {"finish": "matte"},
                 "texture_maps": {},

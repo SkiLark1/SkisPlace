@@ -19,7 +19,7 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 from fastapi.staticfiles import StaticFiles
 import os
 os.makedirs("static/uploads", exist_ok=True)
-app.mount("/static/uploads", StaticFiles(directory="static/uploads"), name="static")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.get("/health")

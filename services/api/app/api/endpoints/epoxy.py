@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from app.api import deps
 from app.db.session import AsyncSessionLocal
-from app.models import EpoxyStyle, ProjectModule
+from app.models import EpoxyStyle, ProjectModule, Module
 from app.api.endpoints.styles import _map_to_response, EpoxyStyleResponse
 from app.core.engine import process_image
 
@@ -76,6 +76,35 @@ async def get_public_styles(
 
     return [_map_to_response(s) for s in styles]
 
+@router.get("/config/public", response_model=dict)
+async def get_public_config(
+    request: Request,
+    db: AsyncSession = Depends(deps.get_db),
+    project: Any = Depends(deps.get_current_project_opt)
+):
+    """
+    Get public configuration for the widget (Theme, Defaults, etc).
+    """
+    if not project:
+        return {}
+
+    # Find Epoxy Visualizer module for this project
+    query = (
+        select(ProjectModule)
+        .join(Module)
+        .where(
+            ProjectModule.project_id == project.id,
+            Module.name == "Epoxy Visualizer"
+        )
+    )
+    result = await db.execute(query)
+    pm = result.scalars().first()
+    
+    if pm:
+        return pm.config
+        
+    return {}
+
 @router.post("/uploads", response_model=UploadResponse)
 async def upload_image(
     request: Request,
@@ -137,12 +166,21 @@ async def create_preview_job(
         except ValueError:
              return JSONResponse(status_code=400, content={"status": "error", "message": "Invalid style_id format"})
 
-        query = select(EpoxyStyle).where(EpoxyStyle.id == uuid_obj)
+        query = select(EpoxyStyle).where(EpoxyStyle.id == uuid_obj).options(selectinload(EpoxyStyle.cover_image))
         result = await db.execute(query)
         style = result.scalar_one_or_none()
 
         if not style:
              return JSONResponse(status_code=404, content={"status": "error", "message": "Style not found"})
+
+        # Resolve Texture Path
+        texture_path = None
+        if style.cover_image and style.cover_image.url:
+            url_part = style.cover_image.url.split("/")[-1]
+            texture_candidate = os.path.join(UPLOAD_DIR, url_part)
+            if os.path.exists(texture_candidate):
+                 texture_path = texture_candidate
+                 print(f"DEBUG: Found texture at {texture_path}")
 
         # 1. Fetch Module Config for AI
         ai_config = None
@@ -215,7 +253,7 @@ async def create_preview_job(
                  params["color"] = "#a1a1aa" 
 
             # Call engine with debug flag and AI config
-            result = process_image(input_path, output_path, params, debug=debug, custom_mask=custom_mask, ai_config=ai_config)
+            result = process_image(input_path, output_path, params, debug=debug, custom_mask=custom_mask, ai_config=ai_config, texture_path=texture_path)
             
             # Handle result dict
             process_success = result.get("success", False)

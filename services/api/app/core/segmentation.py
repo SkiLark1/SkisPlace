@@ -183,6 +183,101 @@ class FloorSegmenter:
             traceback.print_exc()
             return None
 
+    def get_binary_mask(self, image: Image.Image, threshold: float = 0.4, 
+                        geometry_hint: str = "unknown", morphology_cleanup: bool = True) -> Optional[Image.Image]:
+        """
+        Returns a binary mask (0 or 255) for floor regions.
+        
+        CRITICAL: Thresholds at MODEL resolution (512x512), then resizes with NEAREST.
+        This preserves AI output quality without BILINEAR artifacts.
+        
+        Args:
+            image: Input image
+            threshold: Probability threshold (0-1) for floor classification
+            geometry_hint: "top_down" uses letterbox resize, else squash
+            morphology_cleanup: If True, remove tiny islands and fill small holes
+        """
+        if not self.session:
+            return None
+            
+        try:
+            # 1. Preprocess
+            image = ImageOps.exif_transpose(image)
+            image = self._preprocess_for_segmentation(image)
+            
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            
+            input_size = (512, 512)
+            original_size = image.size
+            
+            # Geometry-aware resize
+            use_letterbox = geometry_hint == "top_down"
+            padding_info = None
+            
+            if use_letterbox:
+                img, padding_info = self._letterbox_resize(image, input_size)
+            else:
+                img = image.resize(input_size, Image.Resampling.BILINEAR)
+            
+            img_data = np.array(img).astype(np.float32) / 255.0
+            img_data = (img_data - mean) / std
+            img_data = img_data.transpose(2, 0, 1)
+            img_data = np.expand_dims(img_data, axis=0)
+            
+            # 2. Inference
+            input_name = self.session.get_inputs()[0].name
+            outputs = self.session.run(None, {input_name: img_data})
+            result = outputs[0][0]
+            
+            # 3. Get floor probability at MODEL RESOLUTION
+            default_indices = "3,6,11,13"
+            env_indices = os.getenv("AI_FLOOR_INDICES", default_indices)
+            floor_indices = [int(x) for x in env_indices.split(",")]
+            
+            max_val = np.max(result, axis=0)
+            exp_logits = np.exp(result - max_val)
+            probs = exp_logits / np.sum(exp_logits, axis=0)
+            
+            floor_prob = np.zeros(probs[0].shape, dtype=np.float32)
+            for idx in floor_indices:
+                if idx < probs.shape[0]:
+                    floor_prob += probs[idx]
+            
+            # 4. THRESHOLD AT MODEL RESOLUTION (512x512)
+            binary_mask = (floor_prob >= threshold).astype(np.uint8) * 255
+            
+            # 5. Optional morphology cleanup (at model resolution)
+            if morphology_cleanup:
+                from scipy import ndimage
+                
+                binary_bool = binary_mask > 127
+                
+                # Remove small islands (opening = erode then dilate)
+                structure = ndimage.generate_binary_structure(2, 1)
+                binary_bool = ndimage.binary_opening(binary_bool, structure=structure, iterations=2)
+                
+                # Fill small holes (closing = dilate then erode)
+                binary_bool = ndimage.binary_closing(binary_bool, structure=structure, iterations=2)
+                
+                binary_mask = binary_bool.astype(np.uint8) * 255
+            
+            mask_img = Image.fromarray(binary_mask, mode='L')
+            
+            # 6. RESIZE WITH NEAREST (preserves binary edges)
+            if use_letterbox and padding_info:
+                mask_img = self._undo_letterbox(mask_img, padding_info, original_size)
+            else:
+                mask_img = mask_img.resize(original_size, Image.Resampling.NEAREST)
+            
+            return mask_img
+            
+        except Exception as e:
+            logger.error(f"AI Binary Mask failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
     def get_probability_map(self, image: Image.Image, geometry_hint: str = "unknown") -> Optional[Image.Image]:
         """
         Returns the raw probability map (0-255) where 255 = 100% Floor confidence.

@@ -73,11 +73,23 @@ def detect_camera_geometry(image: Image.Image, debug: bool = False) -> str:
         elif peakedness > 1.8 and peak_strength > 0.6:
             is_eye_level = True
             
-        if debug:
-            print(f"DEBUG: Geometry Detection | Peak: {peak_strength:.2f} | Peakedness: {peakedness:.2f} | Verdict: {'Eye Level' if is_eye_level else 'Top Down'}")
+        # Determine horizon position (pct 0.0-1.0)
+        # Peak idx is relative to valid_region start
+        horizon_pct = 0.5 # Default
+        if valid_region.size > 0:
+             peak_idx = np.argmax(valid_region)
+             horizon_y_global = h_start + peak_idx
+             horizon_pct = float(horizon_y_global) / 256.0
             
-        return "eye_level" if is_eye_level else "top_down"
+        if debug:
+            print(f"DEBUG: Geometry Detection | Peak: {peak_strength:.2f} | Peakedness: {peakedness:.2f} | Horizon: {horizon_pct:.2f} | Verdict: {'Eye Level' if is_eye_level else 'Top Down'}")
+            
+        return {
+            "type": "eye_level" if is_eye_level else "top_down",
+            "horizon": horizon_pct
+        }
         
     except Exception as e:
         print(f"WARN: Geometry detection failed: {e}")
-        return "top_down" # Safe default
+        return {"type": "top_down", "horizon": 0.5}
+

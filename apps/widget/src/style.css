@@ -1,18 +1,109 @@
+/* Host-Overrides are set on the container ID e.g. #skisplace-widget */
 :root {
-  --sp-primary: #7c3aed;
-  --sp-primary-hover: #6d28d9;
-  --sp-bg: #ffffff;
+  /* Default Theme Tokens - correspond to spec */
+  --sp-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --sp-accent: #3b82f6;
+  --sp-accent-contrast: #ffffff;
+  --sp-surface: #ffffff;
+  /* Old bg was white, mapping to surface */
+  --sp-surface-2: #f3f4f6;
+  /* For secondary backgrounds */
   --sp-text: #1f2937;
+  --sp-muted-text: #6b7280;
   --sp-border: #e5e7eb;
+  --sp-radius: 8px;
+  --sp-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
 }
 
 #skisplace-widget {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--sp-font-family);
   color: var(--sp-text);
+  /* Ensure variables cascade */
 }
 
+/* System Selector */
+.sp-system-selector {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--sp-border);
+  padding-bottom: 10px;
+}
+
+/* System Selection Cards */
+.sp-system-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  /* Stack on mobile */
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+@media (min-width: 400px) {
+  .sp-system-cards {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.sp-system-card {
+  background: var(--sp-surface-2);
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius);
+  padding: 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.sp-system-card:hover {
+  border-color: var(--sp-accent);
+  transform: translateY(-2px);
+  box-shadow: var(--sp-shadow);
+}
+
+.sp-sys-icon {
+  font-size: 24px;
+  margin-bottom: 8px;
+}
+
+.sp-sys-title {
+  font-weight: 600;
+  color: var(--sp-text);
+  margin-bottom: 4px;
+}
+
+.sp-sys-desc {
+  font-size: 11px;
+  color: var(--sp-muted-text);
+}
+
+.sp-system-indicator {
+  background: var(--sp-surface-2);
+  padding: 8px 12px;
+  border-radius: var(--sp-radius);
+  margin-bottom: 16px;
+  font-size: 13px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.sp-link-btn {
+  background: none;
+  border: none;
+  color: var(--sp-accent);
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: underline;
+  padding: 0;
+}
+
+
 .sp-box {
-  background: var(--sp-bg);
+  background: var(--sp-surface);
   border: 1px solid var(--sp-border);
   border-radius: 12px;
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
