@@ -326,8 +326,10 @@ async function initWidget() {
           </div>
           
           <div class="sp-img-display" id="sp-img-container">
-            <img src="${state.resultUrl}" class="sp-main-img" id="sp-result-img" />
-            ${state.maskUrl ? '<img src="' + state.maskUrl + '" class="sp-mask-overlay" id="sp-mask-overlay" style="display:none; opacity: 0.5;" />' : ''}
+            <div class="sp-img-wrapper" id="sp-img-wrapper" style="position: relative; display: inline-block; line-height: 0;">
+              <img src="${state.resultUrl}" class="sp-main-img" id="sp-result-img" />
+              ${state.maskUrl ? '<img src="' + state.maskUrl + '" class="sp-mask-overlay" id="sp-mask-overlay" style="display:none; opacity: 0.5;" />' : ''}
+            </div>
           </div>
 
           ${debugMode ? `
@@ -336,6 +338,10 @@ async function initWidget() {
             <div class="sp-debug-row">
               <span class="sp-debug-label">Mask Source</span>
               <span class="sp-debug-value">${state.debugData?.mask_source || 'Unknown'}</span>
+            </div>
+            <div class="sp-debug-row">
+              <span class="sp-debug-label">Camera</span>
+              <span class="sp-debug-value">${state.debugData?.camera_geometry || 'Unknown'}</span>
             </div>
             <div class="sp-debug-row">
               <span class="sp-debug-label">Blend Strength</span>
@@ -510,7 +516,7 @@ async function initWidget() {
   // --- Mask Editor Functions ---
 
   function initMaskEditor() {
-    const container = document.getElementById('sp-img-container');
+    const container = document.getElementById('sp-img-wrapper') || document.getElementById('sp-img-container');
     const baseImg = document.getElementById('sp-result-img') as HTMLImageElement;
     if (!container || !baseImg) return;
 
@@ -522,10 +528,14 @@ async function initWidget() {
     canvas = document.createElement('canvas');
     canvas.id = 'sp-mask-canvas';
     canvas.className = 'sp-mask-canvas';
+    // Resolution matches natural image resolution
     canvas.width = baseImg.naturalWidth || baseImg.width || 400;
     canvas.height = baseImg.naturalHeight || baseImg.height || 300;
+
+    // CSS matches wrapper (which matches image exact size)
     canvas.style.width = '100%';
-    canvas.style.height = 'auto';
+    canvas.style.height = '100%';
+
     container.appendChild(canvas);
 
     const ctx = canvas.getContext('2d')!;

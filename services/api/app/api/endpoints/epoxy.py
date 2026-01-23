@@ -35,6 +35,7 @@ class PreviewResponse(BaseModel):
     result_url: str
     mask_url: str | None = None
     mask_source: str | None = None
+    camera_geometry: str | None = None
 
 # --- Endpoints ---
 
@@ -237,7 +238,8 @@ async def create_preview_job(
             status="success" if process_success else "error",
             result_url=result_url,
             mask_url=mask_url,
-            mask_source=result.get("mask_source")
+            mask_source=result.get("mask_source"),
+            camera_geometry=result.get("camera_geometry")
         )
 
     except Exception as e:
