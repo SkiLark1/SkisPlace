@@ -285,22 +285,7 @@ input[type="file"] {
   border-color: var(--sp-primary);
 }
 
-.sp-img-display {
-  width: 100%;
-  background: #111;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  overflow: hidden;
-  min-height: 300px;
-}
-
-.sp-main-img {
-  max-width: 100%;
-  max-height: 600px;
-  object-fit: contain;
-  display: block;
-}
+/* sp-img-display and sp-main-img moved to Mask Overlay section for grouping */
 
 /* Tuning Panel */
 .sp-tuning-panel {
@@ -449,20 +434,54 @@ input[type="file"] {
   cursor: pointer;
 }
 
-/* Mask Overlay */
+/* Result Image Display Wrapper */
 .sp-img-display {
-  position: relative;
+  /* Frame - Flex container */
+  width: 100%;
+  background: #111;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  min-height: 300px;
 }
 
-.sp-mask-overlay {
+.sp-img-stage {
+  /* Tightly wraps the image content */
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  /* Prevents vertical gap */
+}
+
+.sp-main-img {
+  max-width: 100%;
+  max-height: 600px;
+  object-fit: contain;
+  display: block;
+}
+
+.sp-mask-overlay,
+.sp-mask-canvas {
   position: absolute;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
+  /* For img overlays */
+}
+
+.sp-mask-overlay {
   pointer-events: none;
   mix-blend-mode: multiply;
+}
+
+.sp-mask-canvas {
+  z-index: 20;
+  touch-action: none;
+  opacity: 0.6;
+  cursor: crosshair;
 }
 
 /* Mask Editing UI */

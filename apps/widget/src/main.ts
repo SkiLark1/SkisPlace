@@ -326,7 +326,7 @@ async function initWidget() {
           </div>
           
           <div class="sp-img-display" id="sp-img-container">
-            <div class="sp-img-wrapper" id="sp-img-wrapper" style="position: relative; display: inline-block; line-height: 0;">
+            <div class="sp-img-stage" id="sp-img-stage">
               <img src="${state.resultUrl}" class="sp-main-img" id="sp-result-img" />
               ${state.maskUrl ? '<img src="' + state.maskUrl + '" class="sp-mask-overlay" id="sp-mask-overlay" style="display:none; opacity: 0.5;" />' : ''}
             </div>
@@ -405,6 +405,11 @@ async function initWidget() {
       if (state.maskUrl) {
         const editPanel = document.createElement('div');
         editPanel.className = 'sp-mask-edit-panel';
+
+        // Determine Reset options based on mask_source
+        const maskSource = state.debugData?.mask_source || 'heuristic';
+        const showAIReset = maskSource.includes('ai');
+
         editPanel.innerHTML = `
           <div class="sp-edit-header">
             <button class="sp-btn ${state.maskEdit.enabled ? 'primary' : 'secondary'}" id="sp-toggle-edit">
@@ -425,7 +430,8 @@ async function initWidget() {
             <div class="sp-edit-actions">
               <button class="sp-edit-btn" id="sp-undo" ${state.maskEdit.historyIndex <= 0 ? 'disabled' : ''}>Undo</button>
               <button class="sp-edit-btn" id="sp-redo" ${state.maskEdit.historyIndex >= state.maskEdit.history.length - 1 ? 'disabled' : ''}>Redo</button>
-              <button class="sp-edit-btn" id="sp-reset-mask">Reset</button>
+              ${showAIReset ? '<button class="sp-edit-btn" id="sp-reset-ai">Reset (AI)</button>' : ''}
+              <button class="sp-edit-btn" id="sp-reset-heuristic">Reset (Auto)</button>
             </div>
             <button class="sp-btn primary" id="sp-apply-mask" style="width:100%; margin-top:8px;">Apply Changes</button>
           </div>
@@ -444,6 +450,15 @@ async function initWidget() {
           if (toggleBtn) {
             toggleBtn.onclick = () => {
               state.maskEdit.enabled = !state.maskEdit.enabled;
+
+              // Lock view to Original when editing
+              if (state.maskEdit.enabled) {
+                const imgEl = document.getElementById('sp-result-img') as HTMLImageElement;
+                if (imgEl && state.uploadedImageUrl) {
+                  imgEl.src = state.uploadedImageUrl;
+                }
+              }
+
               render();
             };
           }
@@ -473,9 +488,11 @@ async function initWidget() {
             if (undoBtn) undoBtn.onclick = undoMaskEdit;
             if (redoBtn) redoBtn.onclick = redoMaskEdit;
 
-            // Reset
-            const resetBtn = document.getElementById('sp-reset-mask');
-            if (resetBtn) resetBtn.onclick = resetMaskToAuto;
+            // Reset buttons (AI or Heuristic)
+            const resetAIBtn = document.getElementById('sp-reset-ai');
+            const resetHeuristicBtn = document.getElementById('sp-reset-heuristic');
+            if (resetAIBtn) resetAIBtn.onclick = resetMaskToAuto; // Same function for now
+            if (resetHeuristicBtn) resetHeuristicBtn.onclick = resetMaskToAuto;
 
             // Apply
             const applyBtn = document.getElementById('sp-apply-mask');
@@ -516,9 +533,15 @@ async function initWidget() {
   // --- Mask Editor Functions ---
 
   function initMaskEditor() {
-    const container = document.getElementById('sp-img-wrapper') || document.getElementById('sp-img-container');
+    const stage = document.getElementById('sp-img-stage') || document.getElementById('sp-img-container');
     const baseImg = document.getElementById('sp-result-img') as HTMLImageElement;
-    if (!container || !baseImg) return;
+    if (!stage || !baseImg) return;
+
+    // Ensure image is loaded for correct dimensions
+    if (!baseImg.complete) {
+      baseImg.onload = initMaskEditor;
+      return;
+    }
 
     // Remove existing canvas
     let canvas = document.getElementById('sp-mask-canvas') as HTMLCanvasElement;
@@ -528,15 +551,14 @@ async function initWidget() {
     canvas = document.createElement('canvas');
     canvas.id = 'sp-mask-canvas';
     canvas.className = 'sp-mask-canvas';
-    // Resolution matches natural image resolution
+
+    // Set BITMAP resolution to match natural image
     canvas.width = baseImg.naturalWidth || baseImg.width || 400;
     canvas.height = baseImg.naturalHeight || baseImg.height || 300;
 
-    // CSS matches wrapper (which matches image exact size)
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
+    // CSS uses class (absolute, 100% w/h)
 
-    container.appendChild(canvas);
+    stage.appendChild(canvas);
 
     const ctx = canvas.getContext('2d')!;
     state.maskEdit.canvas = canvas;
@@ -557,6 +579,14 @@ async function initWidget() {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       saveToHistory();
     }
+
+    // ResizeObserver to handle layout shifts
+    const resizeObserver = new ResizeObserver(() => {
+      // Should we re-init? Only if natural dimensions changed (unlikely for same src)
+      // or if we were using display dimensions for bitmap (we aren't).
+      // The main thing is that getBoundingClientRect in draw() will be fresh.
+    });
+    resizeObserver.observe(stage);
 
     // Drawing state
     let isDrawing = false;

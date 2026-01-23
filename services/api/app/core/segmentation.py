@@ -35,6 +35,85 @@ class FloorSegmenter:
             logger.error(f"Failed to initialize ONNX Runtime: {e}")
             self.session = None
 
+    def _preprocess_for_segmentation(self, image: Image.Image) -> Image.Image:
+        """
+        Applies brightness conditioning to handle overexposed images.
+        Tunable via env vars:
+            - AI_AUTOCONTRAST: "1" to enable (default)
+            - AI_BRIGHTNESS_GAMMA: float (default 1.0, >1.0 darkens midtones)
+            - AI_BRIGHT_THRESHOLD: float (default 0.75) - mean luminance above this triggers adjustment
+        """
+        img = image.convert("RGB")
+        
+        enable_autocontrast = os.getenv("AI_AUTOCONTRAST", "1") == "1"
+        gamma = float(os.getenv("AI_BRIGHTNESS_GAMMA", "1.2"))
+        bright_threshold = float(os.getenv("AI_BRIGHT_THRESHOLD", "0.75"))
+        
+        # Analyze luminance
+        grayscale = img.convert("L")
+        pixels = np.array(grayscale).astype(np.float32) / 255.0
+        mean_lum = np.mean(pixels)
+        p95_lum = np.percentile(pixels, 95)
+        
+        is_bright = mean_lum > bright_threshold or p95_lum > 0.95
+        
+        if is_bright:
+            logger.debug(f"Bright image detected (mean={mean_lum:.2f}, p95={p95_lum:.2f}). Applying conditioning.")
+            
+            # Apply autocontrast
+            if enable_autocontrast:
+                img = ImageOps.autocontrast(img, cutoff=1)
+            
+            # Apply gamma darkening (gamma > 1.0 darkens midtones)
+            if gamma != 1.0 and gamma > 0:
+                inv_gamma = 1.0 / gamma
+                lut = [int(((i / 255.0) ** inv_gamma) * 255) for i in range(256)]
+                img = img.point(lut * 3)  # Apply LUT to R, G, B channels
+        
+        return img
+
+    def _letterbox_resize(self, image: Image.Image, target_size: tuple = (512, 512)) -> tuple:
+        """
+        Resize image preserving aspect ratio, padding with gray (128).
+        Returns (resized_image, padding_info) where padding_info = (left, top, right, bottom).
+        """
+        img = image.convert("RGB")
+        orig_w, orig_h = img.size
+        target_w, target_h = target_size
+        
+        # Calculate scale to fit
+        scale = min(target_w / orig_w, target_h / orig_h)
+        new_w = int(orig_w * scale)
+        new_h = int(orig_h * scale)
+        
+        # Resize
+        resized = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
+        
+        # Pad
+        pad_left = (target_w - new_w) // 2
+        pad_top = (target_h - new_h) // 2
+        pad_right = target_w - new_w - pad_left
+        pad_bottom = target_h - new_h - pad_top
+        
+        # Create padded image with gray background
+        padded = Image.new("RGB", target_size, (128, 128, 128))
+        padded.paste(resized, (pad_left, pad_top))
+        
+        return padded, (pad_left, pad_top, new_w, new_h)
+    
+    def _undo_letterbox(self, mask: Image.Image, padding_info: tuple, original_size: tuple) -> Image.Image:
+        """
+        Undo letterbox padding and resize mask back to original size.
+        padding_info = (left, top, content_w, content_h)
+        """
+        left, top, content_w, content_h = padding_info
+        
+        # Crop out the padded region
+        cropped = mask.crop((left, top, left + content_w, top + content_h))
+        
+        # Resize to original
+        return cropped.resize(original_size, Image.Resampling.NEAREST)
+
     def segment(self, image: Image.Image, confidence_threshold: float = 0.5) -> Optional[Image.Image]:
         """
         Segments the floor from the given image using the loaded ONNX model.
@@ -46,8 +125,8 @@ class FloorSegmenter:
             
         try:
             # 1. Preprocess
-            # Handle orientation
             image = ImageOps.exif_transpose(image)
+            image = self._preprocess_for_segmentation(image)  # Brightness conditioning
             
             mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
             std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -55,8 +134,7 @@ class FloorSegmenter:
             input_size = (512, 512)
             original_size = image.size
             
-            # Simple Resize (Squash) - proven more robust for this model
-            img = image.convert('RGB').resize(input_size, Image.Resampling.BILINEAR)
+            img = image.resize(input_size, Image.Resampling.BILINEAR)
             img_data = np.array(img).astype(np.float32) / 255.0
             
             # Normalize and Transpose (HWC -> CHW)
@@ -105,17 +183,18 @@ class FloorSegmenter:
             traceback.print_exc()
             return None
 
-    def get_probability_map(self, image: Image.Image) -> Optional[Image.Image]:
+    def get_probability_map(self, image: Image.Image, geometry_hint: str = "unknown") -> Optional[Image.Image]:
         """
         Returns the raw probability map (0-255) where 255 = 100% Floor confidence.
+        Uses letterbox resizing for top_down images to preserve aspect ratio.
         """
         if not self.session:
             return None
             
         try:
             # 1. Preprocess
-            # Handle orientation
             image = ImageOps.exif_transpose(image)
+            image = self._preprocess_for_segmentation(image)  # Brightness conditioning
             
             mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
             std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -123,8 +202,17 @@ class FloorSegmenter:
             input_size = (512, 512)
             original_size = image.size
             
-            # Simple Resize (Squash)
-            img = image.convert('RGB').resize(input_size, Image.Resampling.BILINEAR)
+            # Geometry-aware resize selection
+            use_letterbox = geometry_hint == "top_down"
+            padding_info = None
+            
+            if use_letterbox:
+                logger.debug("Using letterbox resize for top-down image")
+                img, padding_info = self._letterbox_resize(image, input_size)
+            else:
+                logger.debug("Using squash resize for eye-level image")
+                img = image.resize(input_size, Image.Resampling.BILINEAR)
+            
             img_data = np.array(img).astype(np.float32) / 255.0
             
             # Normalize and Transpose (HWC -> CHW)
@@ -159,7 +247,10 @@ class FloorSegmenter:
             prob_img = Image.fromarray(prob_map, mode='L')
             
             # Resize back to original
-            prob_img = prob_img.resize(original_size, Image.Resampling.BILINEAR)
+            if use_letterbox and padding_info:
+                prob_img = self._undo_letterbox(prob_img, padding_info, original_size)
+            else:
+                prob_img = prob_img.resize(original_size, Image.Resampling.BILINEAR)
             
             return prob_img
             

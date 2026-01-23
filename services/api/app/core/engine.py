@@ -113,29 +113,21 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                     draw.line((0, y, width, y), fill=alpha_val)
 
     # C. AI Refinement (If enabled and not user mask)
-    from PIL import ImageChops
     if mask_source == "heuristic" and ai_config and ai_config.get("enabled", False):
         try:
+            import numpy as np
+            from scipy import ndimage
+            
             confidence = float(ai_config.get("confidence_threshold", 0.5))
-            # New Refinement Logic:
-            # We want to remove pixels where the AI is confident it is NOT floor.
-            # P(NotFloor) = 1.0 - P(Floor)
-            # Remove (Mask=0) if P(NotFloor) > confidence
-            # => Remove if 1.0 - P(Floor) > confidence
-            # => Remove if P(Floor) < 1.0 - confidence
-            # => Keep (Mask=1) if P(Floor) >= 1.0 - confidence
-
             print(f"DEBUG: Attempting AI Refinement. Removal Confidence Threshold: {confidence}")
             
-            # Get raw probability map (0-255)
-            prob_map = FloorSegmenter.instance().get_probability_map(original)
+            # Get raw probability map (0-255) - Pass geometry hint for letterbox/squash selection
+            geometry_hint = result_info.get("camera_geometry", "unknown")
+            prob_map = FloorSegmenter.instance().get_probability_map(original, geometry_hint=geometry_hint)
             
             if prob_map:
                 # Calculate keep threshold in 0-255 range
-                # If confidence is 0.8 (conservative removal), keep_thresh = (1-0.8)*255 = 51.
-                # Only remove if P(Floor) < 51.
                 keep_threshold = int((1.0 - confidence) * 255)
-                # Clamp to safe range [1, 254] to avoid weird binary behavior
                 keep_threshold = max(1, min(254, keep_threshold))
                 
                 print(f"DEBUG: AI Refinement - Keeping pixels with Floor Prob >= {keep_threshold}/255")
@@ -143,11 +135,44 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                 # Create binary refinement mask: White = Keep, Black = Remove
                 refinement_mask = prob_map.point(lambda p: 255 if p >= keep_threshold else 0)
                 
-                # Combine: Final = Base * Refinement
-                mask = ImageChops.multiply(mask, refinement_mask)
+                # --- SANITY CHECK ---
+                ai_arr = np.array(refinement_mask)
+                total_pixels = ai_arr.size
+                white_pixels = np.sum(ai_arr > 127)
+                coverage = white_pixels / total_pixels if total_pixels > 0 else 0.0
                 
-                result_info["mask_source"] = "ai_refined"
-                print("DEBUG: AI Refinement applied successfully")
+                print(f"DEBUG: AI Mask Coverage: {coverage*100:.1f}%")
+                
+                # Coverage Thresholds
+                MIN_COVERAGE = 0.08  # 8%
+                
+                if coverage < MIN_COVERAGE:
+                    # AI mask is too small - use Hybrid Fallback
+                    print(f"DEBUG: AI coverage too low ({coverage*100:.1f}% < {MIN_COVERAGE*100:.1f}%). Using Hybrid Fallback (Union).")
+                    
+                    # Hybrid = Union of heuristic base and AI mask
+                    base_arr = np.array(mask)
+                    combined_arr = np.maximum(base_arr, ai_arr)
+                    mask = Image.fromarray(combined_arr.astype(np.uint8), mode="L")
+                    result_info["mask_source"] = "ai_hybrid_fallback"
+                else:
+                    # Apply AI refinement normally
+                    # First, Apply Largest Connected Component Filter
+                    binary_mask = (ai_arr > 127).astype(np.uint8)
+                    labeled, num_features = ndimage.label(binary_mask)
+                    
+                    if num_features > 1:
+                        component_sizes = ndimage.sum(binary_mask, labeled, range(1, num_features + 1))
+                        largest_label = np.argmax(component_sizes) + 1
+                        binary_mask = (labeled == largest_label).astype(np.uint8)
+                        refinement_mask = Image.fromarray((binary_mask * 255).astype(np.uint8), mode="L")
+                        print(f"DEBUG: Connected Component Filter: Kept largest of {num_features} regions.")
+                    
+                    # Combine: Final = Base * Refinement
+                    mask = ImageChops.multiply(mask, refinement_mask)
+                    result_info["mask_source"] = "ai_refined"
+                    
+                print("DEBUG: AI Refinement step complete")
             else:
                  print("DEBUG: AI Segmentation returned no probability map")
         except Exception as e:
