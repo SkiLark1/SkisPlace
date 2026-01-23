@@ -226,10 +226,10 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                         draw.line((0, y, width, y), fill=alpha_val)
 
     # D. Edge Feathering (Geometry & Source Aware)
-    # Only feather heuristics. AI and User masks should be sharp.
-    should_feather = (result_info.get("camera_geometry") != "top_down") and (result_info.get("mask_source") == "heuristic")
+    # 1. Gradient Feather (Large fade for rough heuristic masks)
+    should_gradient_feather = (result_info.get("camera_geometry") != "top_down") and (result_info.get("mask_source") == "heuristic")
     
-    if width > 0 and should_feather:
+    if width > 0 and should_gradient_feather:
         h_mask = Image.new("L", (width, height), 255)
         h_draw = ImageDraw.Draw(h_mask)
         fade_width = int(width * 0.15)
@@ -238,6 +238,13 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
             h_draw.line((x, 0, x, height), fill=alpha)
             h_draw.line((width - 1 - x, 0, width - 1 - x, height), fill=alpha)
         mask = ImageChops.multiply(mask, h_mask)
+
+    # 2. Micro Feather (Anti-aliasing for AI masks) - Mission 28
+    # AI masks are resized nearest-neighbor, so they have jagged edges.
+    # We apply a tiny blur to soften them into the wall.
+    if result_info.get("mask_source") == "ai":
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=1.5))
+
 
     mask = mask.filter(ImageFilter.GaussianBlur(radius=mask_blur))
     
@@ -354,6 +361,42 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                 repeats_x = (t_canvas_width // step_x) + 2
                 repeats_y = (height // step_y) + 2
                  
+                # Mission 30: System-Specific Tuning Profiles
+                # Defines physics/rendering parameters per material category
+                category = parameters.get("style_category", "flake").lower()
+                
+                SYSTEM_PROFILES = {
+                    "flake": {
+                        "rotation_angles": [0, 90, 180, 270], # Full chaos
+                        "mirror_prob": 0.5,
+                        "scale_jitter": 0.1,  # +/- 10%
+                        "shadow_lift": 0.28,  # High visibility
+                        "highlight_compress": 0.85, # Soft roll-off
+                        "specular_thresh": 200, # Only very bright spots
+                        "specular_blur": 15,    # Soft reflections
+                    },
+                    "metallic": {
+                        "rotation_angles": [0, 180], # Maintain flow direction (no 90/270)
+                        "mirror_prob": 0.3, # Less mirroring to keep flow
+                        "scale_jitter": 0.05, # Subtle jitter
+                        "shadow_lift": 0.10,  # Deep contrast
+                        "highlight_compress": 0.98, # Sharp highlights
+                        "specular_thresh": 180, # More reflections
+                        "specular_blur": 8,     # Sharp reflections
+                    },
+                    "quartz": {
+                        "rotation_angles": [0, 90, 180, 270],
+                        "mirror_prob": 0.5,
+                        "scale_jitter": 0.08,
+                        "shadow_lift": 0.22,
+                        "highlight_compress": 0.90,
+                        "specular_thresh": 190,
+                        "specular_blur": 12,
+                    }
+                }
+                
+                profile = SYSTEM_PROFILES.get(category, SYSTEM_PROFILES["flake"])
+
                 import random
                 
                 for ix in range(repeats_x):
@@ -364,29 +407,33 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                         px = (ix * step_x) - overlap_px
                         py = (iy * step_y) - y_shift - overlap_px
                         
-                        # MISSION 21: Randomization
-                        # Randomize each tile to break repetition
+                        # MISSION 21: Randomization (Controlled by Profile)
                         tile = texture.copy()
                         
-                        # 1. Random Rotation (only if square or 180)
+                        # 1. Random Rotation
                         is_square = (t_width == t_height)
-                        rot_choices = [0, 180]
-                        if is_square:
-                            rot_choices.extend([90, 270])
+                        rot_choices = list(profile["rotation_angles"])
                         
-                        rot = random.choice(rot_choices)
-                        if rot > 0:
-                             tile = tile.rotate(rot)
+                        # If not square, can only do 0/180 safely in grid?
+                        # Actually profile["rotation_angles"] assumes square or compatible.
+                        # If non-square, restrict to 0/180 regardless of profile to avoid overlap issues.
+                        if not is_square:
+                             rot_choices = [r for r in rot_choices if r % 180 == 0]
+
+                        if rot_choices:
+                             rot = random.choice(rot_choices)
+                             if rot > 0:
+                                  tile = tile.rotate(rot)
                         
                         # 2. Random Mirroring
-                        if random.random() > 0.5:
-                             tile = ImageOps.mirror(tile) # Flip L/R
-                        if random.random() > 0.5:
-                             tile = ImageOps.flip(tile)   # Flip T/B
+                        if random.random() < profile["mirror_prob"]:
+                             tile = ImageOps.mirror(tile)
+                        if random.random() < profile["mirror_prob"]:
+                             tile = ImageOps.flip(tile)
                              
-                        # 3. Scale Jitter (Zoom in 0-10% to add variation without gaps)
-                        if random.random() > 0.3: # Apply to 70% of tiles
-                            scale = 1.0 + (random.random() * 0.1)
+                        # 3. Scale Jitter
+                        if profile["scale_jitter"] > 0 and random.random() > 0.3:
+                            scale = 1.0 + (random.random() * profile["scale_jitter"])
                             nw = int(t_width * scale)
                             nh = int(t_height * scale)
                             tile = tile.resize((nw, nh), Image.Resampling.BILINEAR)
@@ -396,11 +443,12 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                             top = (nh - t_height) // 2
                             tile = tile.crop((left, top, left + t_width, top + t_height))
 
-                        # Generate Edge Mask for Blending
+                        # Generate Edge Mask
                         tile_mask = create_edge_mask(tile.width, tile.height, overlap_px)
                         
-                        # Paste with Mask (Alpha Blending)
+                        # Paste
                         base_layer.paste(tile, (px, py), mask=tile_mask)
+
 
                 
                 print(f"DEBUG: Applied texture from {texture_path} (Overscan: {overscan}x)")
@@ -453,32 +501,37 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
     blur_rad = max(5, int(width * 0.015))
     lighting_map = grayscale.filter(ImageFilter.GaussianBlur(radius=blur_rad))
     
-    # Normalize Lighting (Mission 24/25 - Tone Mapping)
-    # Adaptive Shadow Lift based on Material Category
-    # Flake needs flat/bright lighting to show texture.
-    # Metallic needs deep contrasts (liquid look).
-    category = parameters.get("style_category", "flake").lower()
+    # Normalize Lighting (Mission 26/27/30 - Tone Mapping with Profiles)
+    # Adaptive Shadow Lift + Highlight Compression using System Profile
     
-    lifts = {
-        "metallic": 30, # Deep shadows
-        "quartz": 70,   # Balanced
-        "flake": 80,    # Bright shadows (visibility)
-    }
-    shadow_lift = lifts.get(category, 64)
+    # Use values from the profile we resolved earlier
+    lift = profile["shadow_lift"]
+    compress = profile["highlight_compress"]
     
-    scale = (255.0 - shadow_lift) / 255.0
-    
-    def normalize_lighting(p):
-        # Linear compression: lifts black from 0 to shadow_lift
-        return int(p * scale + shadow_lift)
-    
-    lighting_map = lighting_map.point(normalize_lighting)
+    # Generate LUT
+    lut = []
+    import math
+    for i in range(256):
+        # 1. Normalize input 0-1
+        p = i / 255.0
+        
+        # 2. Shadow Lift (Linear)
+        p_lifted = p * (1.0 - lift) + lift
+        
+        # 3. Highlight Compression (Gamma/Power Roll-off)
+        p_comp = 1.0 - math.pow(1.0 - p_lifted, compress)
+        
+        # 4. Clamp and Scale
+        val = int(min(1.0, max(0.0, p_comp)) * 255)
+        lut.append(val)
+        
+    lighting_map = lighting_map.point(lut)
     
     # Optional: Gamma from params
     if gamma != 1.0 and gamma > 0:
         inv_gamma = 1.0 / gamma 
-        lut = [int(((i / 255.0) ** inv_gamma) * 255) for i in range(256)]
-        lighting_map = lighting_map.point(lut)
+        lut_gamma = [int(((i / 255.0) ** inv_gamma) * 255) for i in range(256)]
+        lighting_map = lighting_map.point(lut_gamma)
 
     lighting_rgba = lighting_map.convert("RGBA")
     
@@ -486,28 +539,26 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
     if base_layer is None:
         base_layer = Image.new("RGBA", (width, height), color_hex)
     
-    # C. Multiply Blend (Apply Lighting to Texture)
-    # Texture * Lighting
+    # C. Multiply Blend
     blended_texture = ImageChops.multiply(base_layer, lighting_rgba)
     
     # D. Brightness/Boost
-    # Boost contrast/brightness of the final surface
     enhancer = ImageEnhance.Brightness(blended_texture)
     epoxy_base = enhancer.enhance(brightness_boost)
 
-    # E. Specular Highlights (Optional)
-    # Gated by finish.
+    # E. Specular Highlights (Mission 30: Profile Driven)
+    # Gated by finish (Matte has no specular)
     if finish in ["gloss", "satin"]:
-        # Extract highlights from original grayscale (Sharp reflections)
-        # We WANT sharp reflections (high freq), so use original grayscale.
-        threshold = 180 if finish == "gloss" else 200
+        # Use Profile settings
+        threshold = profile["specular_thresh"]
+        blur_radius = profile["specular_blur"]
         
+        # Extract highlights from original grayscale
         def highlight_filter(p):
             return p if p > threshold else 0
             
         highlight_map = grayscale.point(highlight_filter)
         
-        blur_radius = 10 if finish == "gloss" else 20
         highlight_overlay = highlight_map.filter(ImageFilter.GaussianBlur(radius=blur_radius)).convert("RGBA")
         
         # Add highlights

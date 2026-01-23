@@ -245,14 +245,29 @@ class FloorSegmenter:
                     floor_prob += probs[idx]
             
             # 4. THRESHOLD AT MODEL RESOLUTION (512x512)
-            binary_mask = (floor_prob >= threshold).astype(np.uint8) * 255
+            # Mission 29: Dual Threshold Logic ("Confidence Edge")
+            # a. Core Mask (High Confidence)
+            thresh_core = threshold
+            mask_core = (floor_prob >= thresh_core)
+            
+            # b. Soft Mask (Low Confidence - for expansion)
+            thresh_edge = threshold * 0.6 # e.g. 0.3 if thresh=0.5
+            mask_soft = (floor_prob >= thresh_edge)
+            
+            # c. Grow Core into Soft
+            # Dilate core to find adjacent candidates
+            from scipy import ndimage
+            structure_growth = ndimage.generate_binary_structure(2, 2) # Connectivity 2 (8-neighbors)
+            # Dilate core by ~15 pixels (at 512px) to jump gaps to shadows
+            mask_core_grown = ndimage.binary_dilation(mask_core, structure=structure_growth, iterations=15)
+            
+            # Final = Core OR (Soft AND Grown)
+            # We keep everything in Core.
+            # We add pixels from Soft Mask ONLY if they are near the Core.
+            binary_bool = mask_core | (mask_soft & mask_core_grown)
             
             # 5. Optional morphology cleanup (at model resolution)
             if morphology_cleanup:
-                from scipy import ndimage
-                
-                binary_bool = binary_mask > 127
-                
                 # Remove small islands (opening = erode then dilate)
                 structure = ndimage.generate_binary_structure(2, 1)
                 binary_bool = ndimage.binary_opening(binary_bool, structure=structure, iterations=2)
@@ -260,7 +275,12 @@ class FloorSegmenter:
                 # Fill small holes (closing = dilate then erode)
                 binary_bool = ndimage.binary_closing(binary_bool, structure=structure, iterations=2)
                 
-                binary_mask = binary_bool.astype(np.uint8) * 255
+            # Mission 28: Edge Coverage Fix
+            # Dilate final mask by small amount (3px) to ensure wall contact
+            # This fixes "1px gap" issues.
+            binary_bool = ndimage.binary_dilation(binary_bool, structure=ndimage.generate_binary_structure(2, 1), iterations=2)
+                
+            binary_mask = binary_bool.astype(np.uint8) * 255
             
             mask_img = Image.fromarray(binary_mask, mode='L')
             
