@@ -64,6 +64,7 @@ async function initWidget() {
 
   const API_BASE = apiBase || 'http://localhost:8000/api/v1';
 
+  // Fix 4B: Block style loading logic and config loading unless key exists
   if (!apiKey) {
     container.innerHTML = `<div class="sp-error">Configuration missing (API Key)</div>`;
     return;
@@ -178,7 +179,12 @@ async function initWidget() {
 
           // CHANGE: Go to 'systems' step first
           state.step = 'systems';
-          loadStyles(); // Start loading styles in background
+          // Fix 4B: Only load styles if we have a key (we should, but safer)
+          if (apiKey) {
+            loadStyles();
+          } else {
+            console.error("No API key when starting upload flow?");
+          }
 
           const res = await fetch(`${API_BASE}/epoxy/uploads`, {
             method: 'POST',
@@ -285,7 +291,7 @@ async function initWidget() {
         // Defer click handler attachment
         setTimeout(() => {
           const retry = content.querySelector('#sp-retry-styles') as HTMLButtonElement;
-          if (retry) retry.onclick = loadStyles;
+          if (retry) retry.onclick = () => loadStyles();
         }, 0);
       } else {
         // FILTER STYLES BY SYSTEM
@@ -755,6 +761,10 @@ async function initWidget() {
   // --- Logic ---
 
   async function loadStyles() {
+    if (!apiKey) {
+      console.warn("Skipping loadStyles - no API key");
+      return;
+    }
     state.loadingStyles = true;
     render();
     try {

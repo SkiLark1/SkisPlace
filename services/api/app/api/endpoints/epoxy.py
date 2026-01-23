@@ -239,10 +239,12 @@ async def create_preview_job(
     print(f"DEBUG: Epoxy Preview Request. ProjectID={project_id}, StyleID={style_id}")
 
     # Mission 11: Cold Start - Ensure AI config exists
+    # Change 4A: We must do this AFTER resolving project_id from key fallback
     if project_id:
         try:
              pid_uuid = uuid.UUID(project_id)
              await _ensure_epoxy_module(db, pid_uuid)
+             print(f"DEBUG: Ensured module config for {project_id}")
         except Exception as cx:
              print(f"WARN: Failed to ensure module config in preview: {cx}")
 

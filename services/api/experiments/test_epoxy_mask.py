@@ -10,7 +10,7 @@ def test_epoxy_logic():
     img.save(input_path)
 
     # 2. Process
-    params = {"color": "#FF0000"} # Red epoxy
+    params = {"color": "#FF0000", "mask_blur": 0} # Red epoxy, no blur
     success = process_image(input_path, output_path, params)
     
     if not success:

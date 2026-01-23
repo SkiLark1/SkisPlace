@@ -18,3 +18,4 @@ pillow
 onnxruntime
 numpy
 scipy
+opencv-python-headless

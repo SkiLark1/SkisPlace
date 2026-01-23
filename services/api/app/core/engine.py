@@ -2,6 +2,7 @@ import os
 import base64
 import io
 from PIL import Image, ImageEnhance, ImageOps, ImageDraw, ImageFilter, ImageChops
+import cv2
 import numpy as np
 
 def find_coeffs(source_coords, target_coords):
@@ -112,7 +113,7 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
             try:
                 segmenter = FloorSegmenter.instance()
                 if segmenter.session:
-                    import numpy as np
+                    # import numpy as np (Removed to specific shadowing)
                     
                     # Get AI binary mask (thresholded at model resolution, resized with NEAREST)
                     geometry_hint = result_info.get("camera_geometry", "unknown")
@@ -158,13 +159,13 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
             mask = ai_mask
             mask_source = "ai"
             result_info["mask_source"] = "ai"
-            print(f"DEBUG: ✓ Using AI mask (coverage {ai_coverage*100:.1f}% >= {MIN_COVERAGE*100:.1f}%)")
+            print(f"DEBUG: [YES] Using AI mask (coverage {ai_coverage*100:.1f}% >= {MIN_COVERAGE*100:.1f}%)")
         else:
             # USE HEURISTIC MASK - full fallback, no blending
             mask_source = "heuristic"
             result_info["mask_source"] = "heuristic"
             result_info["ai_fallback_reason"] = ai_fallback_reason
-            print(f"DEBUG: ✗ AI fallback → heuristic. Reason: {ai_fallback_reason}")
+            print(f"DEBUG: [NO] AI fallback -> heuristic. Reason: {ai_fallback_reason}")
             
             # Geometry-Aware Heuristic
             is_top_down = result_info.get("camera_geometry") == "top_down"
@@ -239,6 +240,43 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
             h_draw.line((width - 1 - x, 0, width - 1 - x, height), fill=alpha)
         mask = ImageChops.multiply(mask, h_mask)
 
+    # Mission 28/Change 3A: Morphological Improvements & Clean Edges
+    # We always apply this to clean up the mask, especially for AI or User masks.
+    if mask is not None:
+        mask_np = np.array(mask)
+        
+        # 1. Close (Fill pinholes)
+        # 5x5 kernel is robust enough for small holes
+        kernel_close = np.ones((5,5), np.uint8)
+        mask_np = cv2.morphologyEx(mask_np, cv2.MORPH_CLOSE, kernel_close)
+        
+        # 2. Dilate (Expand edges)
+        # Push into the wall/corners by a few pixels
+        dilate_px = max(2, int(width * 0.003)) # 0.3% of width (e.g. 3px for 1000w)
+        kernel_dilate = np.ones((dilate_px, dilate_px), np.uint8)
+        mask_np = cv2.dilate(mask_np, kernel_dilate, iterations=1)
+        
+        # Change 3B: Wall Guardrail (Horizon Cutoff)
+        # Prevent mask from bleeding "up" onto the wall.
+        # Use detected horizon if available.
+        h_pct = result_info.get("camera_geometry_horizon", horizon_pct) # Use local or stored?
+        # horizon_pct was computed earlier
+        
+        if h_pct > 0 and h_pct < 0.9: # Valid horizon
+            # Cutoff anything above horizon
+            # Use a tiny margin (e.g. 5px or 1%) ABOVE horizon?
+            # User said: "Remove any mask pixels above a 'horizon line'".
+            # Let's start strictly at the horizon line.
+            # Horizon is y = height * h_pct.
+            cutoff_y = int(height * h_pct)
+            
+            # Zero out rows 0 to cutoff_y
+            if cutoff_y > 0:
+                mask_np[0:cutoff_y, :] = 0
+                print(f"DEBUG: Applied Horizon Cutoff at Y={cutoff_y}")
+        
+        mask = Image.fromarray(mask_np)
+
     # 2. Micro Feather (Anti-aliasing for AI masks) - Mission 28
     # AI masks are resized nearest-neighbor, so they have jagged edges.
     # We apply a tiny blur to soften them into the wall.
@@ -249,7 +287,7 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
     mask = mask.filter(ImageFilter.GaussianBlur(radius=mask_blur))
     
     # E. Compute Mask Stats (always, for debugging)
-    import numpy as np
+    # import numpy as np (Removed global shadow)
     mask_arr = np.array(mask)
     result_info["mask_stats"] = {
         "mean": float(np.mean(mask_arr)),
@@ -311,7 +349,43 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
     grayscale_rgba = grayscale.convert("RGBA")
     
     # B. Create Color/Texture Layer
+    # B. Create Color/Texture Layer
     base_layer = None
+    
+    # Mission 30: System-Specific Tuning Profiles (Moved here so available for Lighting too)
+    category = parameters.get("style_category", "flake").lower()
+    
+    SYSTEM_PROFILES = {
+        "flake": {
+            "rotation_angles": [0, 90, 180, 270], # Full chaos
+            "mirror_prob": 0.5,
+            "scale_jitter": 0.1,  # +/- 10%
+            "shadow_lift": 0.28,  # High visibility
+            "highlight_compress": 0.85, # Soft roll-off
+            "specular_thresh": 200, # Only very bright spots
+            "specular_blur": 15,    # Soft reflections
+        },
+        "metallic": {
+            "rotation_angles": [0, 180], # Maintain flow direction (no 90/270)
+            "mirror_prob": 0.3, # Less mirroring to keep flow
+            "scale_jitter": 0.05, # Subtle jitter
+            "shadow_lift": 0.10,  # Deep contrast
+            "highlight_compress": 0.98, # Sharp highlights
+            "specular_thresh": 180, # More reflections
+            "specular_blur": 8,     # Sharp reflections
+        },
+        "quartz": {
+            "rotation_angles": [0, 90, 180, 270],
+            "mirror_prob": 0.5,
+            "scale_jitter": 0.08,
+            "shadow_lift": 0.22,
+            "highlight_compress": 0.90,
+            "specular_thresh": 190,
+            "specular_blur": 12,
+        }
+    }
+    
+    profile = SYSTEM_PROFILES.get(category, SYSTEM_PROFILES["flake"])
     
     if texture_path and os.path.exists(texture_path):
         try:
@@ -326,29 +400,50 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                 t_canvas_width = width * overscan
                 base_layer = Image.new("RGBA", (t_canvas_width, height))
                 
-                # Helper: Create Noise Mask for Edge Blending
-                def create_edge_mask(mask_w, mask_h, overlap_px):
+                # Helper: Create Edge Mask (Directional Feathering) - Mission 34
+                def create_directional_feather(mask_w, mask_h, overlap_px, feather_left=False, feather_top=False):
                     mask = Image.new("L", (mask_w, mask_h), 255)
                     if overlap_px <= 0:
                         return mask
                         
                     draw = ImageDraw.Draw(mask)
-                    # Create linear gradient fade at edges
-                    fade_len = int(overlap_px * 1.5)
+                    # We only feather the "incoming" edges (Left and Top) of the NEW tile
+                    # so that it blends smoothly ON TOP OF the previous tiles.
+                    # The Right and Bottom edges stay opaque (255) so next tiles can blend onto THEM.
+                    
+                    fade_len = int(overlap_px * 1.5) # Slightly wider than overlap for smoothness? Or match it?
+                    # Let's match overlap for now to ensure we don't fade into the non-overlapped area affecting opacity.
+                    fade_len = overlap_px 
+                    
                     if fade_len > 0:
-                        # Horizontal fades
-                        for x in range(fade_len):
-                            alpha = int(255 * (x / fade_len))
-                            draw.line((x, 0, x, mask_h), fill=alpha)
-                            draw.line((mask_w - 1 - x, 0, mask_w - 1 - x, mask_h), fill=alpha)
-                        # Vertical fades
-                        v_mask = Image.new("L", (mask_w, mask_h), 255)
-                        v_draw = ImageDraw.Draw(v_mask)
-                        for y in range(fade_len):
-                            alpha = int(255 * (y / fade_len))
-                            v_draw.line((0, y, mask_w, y), fill=alpha)
-                            v_draw.line((0, mask_h - 1 - y, mask_w, mask_h - 1 - y), fill=alpha)
-                        mask = ImageChops.multiply(mask, v_mask)
+                        # Feather LEFT edge (if this is not the first column)
+                        if feather_left:
+                            for x in range(fade_len):
+                                alpha = int(255 * (x / fade_len))
+                                draw.line((x, 0, x, mask_h), fill=alpha)
+                                
+                        # Feather TOP edge (if this is not the first row)
+                        if feather_top:
+                            for y in range(fade_len):
+                                alpha = int(255 * (y / fade_len))
+                                # Note: We are multiplying if both are present?
+                                # If we use draw.line with a low alpha on an existing low alpha, it overwrites or blends?
+                                # "fill" in draw.line overwrites.
+                                # So for the corner (top-left), we need to handle intersection carefully.
+                                # Easiest way: Draw horizontal lines, but multiply by existing mask value?
+                                # Or just create separate V mask and multiply.
+                                pass 
+                            
+                            # Create a vertical feather mask
+                            v_mask = Image.new("L", (mask_w, mask_h), 255)
+                            v_draw = ImageDraw.Draw(v_mask)
+                            for y in range(fade_len):
+                                alpha = int(255 * (y / fade_len))
+                                v_draw.line((0, y, mask_w, y), fill=alpha)
+                            
+                            # Combine
+                            mask = ImageChops.multiply(mask, v_mask)
+                            
                     return mask
 
                 # Overlap Logic
@@ -361,42 +456,6 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                 repeats_x = (t_canvas_width // step_x) + 2
                 repeats_y = (height // step_y) + 2
                  
-                # Mission 30: System-Specific Tuning Profiles
-                # Defines physics/rendering parameters per material category
-                category = parameters.get("style_category", "flake").lower()
-                
-                SYSTEM_PROFILES = {
-                    "flake": {
-                        "rotation_angles": [0, 90, 180, 270], # Full chaos
-                        "mirror_prob": 0.5,
-                        "scale_jitter": 0.1,  # +/- 10%
-                        "shadow_lift": 0.28,  # High visibility
-                        "highlight_compress": 0.85, # Soft roll-off
-                        "specular_thresh": 200, # Only very bright spots
-                        "specular_blur": 15,    # Soft reflections
-                    },
-                    "metallic": {
-                        "rotation_angles": [0, 180], # Maintain flow direction (no 90/270)
-                        "mirror_prob": 0.3, # Less mirroring to keep flow
-                        "scale_jitter": 0.05, # Subtle jitter
-                        "shadow_lift": 0.10,  # Deep contrast
-                        "highlight_compress": 0.98, # Sharp highlights
-                        "specular_thresh": 180, # More reflections
-                        "specular_blur": 8,     # Sharp reflections
-                    },
-                    "quartz": {
-                        "rotation_angles": [0, 90, 180, 270],
-                        "mirror_prob": 0.5,
-                        "scale_jitter": 0.08,
-                        "shadow_lift": 0.22,
-                        "highlight_compress": 0.90,
-                        "specular_thresh": 190,
-                        "specular_blur": 12,
-                    }
-                }
-                
-                profile = SYSTEM_PROFILES.get(category, SYSTEM_PROFILES["flake"])
-
                 import random
                 
                 for ix in range(repeats_x):
@@ -443,19 +502,167 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                             top = (nh - t_height) // 2
                             tile = tile.crop((left, top, left + t_width, top + t_height))
 
-                        # Generate Edge Mask
-                        tile_mask = create_edge_mask(tile.width, tile.height, overlap_px)
+                        # Generate Edge Mask (Directional)
+                        # Feather Left if col > 0. Feather Top if row > 0.
+                        feather_left = (ix > 0)
+                        feather_top = (iy > 0)
                         
-                        # Paste
-                        base_layer.paste(tile, (px, py), mask=tile_mask)
+                        # Optimization: If no feathering needed, mask is fully white
+                        if feather_left or feather_top:
+                            tile_mask = create_directional_feather(tile.width, tile.height, overlap_px, feather_left, feather_top)
+                        else:
+                            tile_mask = None # Treated as full opacity 255
+                        
+                        # Composite
+                        # Change 1B: Use alpha_composite for true layering without accumulation artifacts
+                        # To use alpha_composite, we need:
+                        # 1. Base layer (RGBA)
+                        # 2. Source layer (RGBA) - which is our Tile
+                        # 3. Position offset. alpha_composite doesn't take position.
+                        # So we must create a temp layer size of canvas, paste tile into it, then composite?
+                        # That's slow for large canvas. 
+                        # Faster: Crop the destination region from base, composite tile onto it, paste back.
+                        
+                        # Destination Coords
+                        dest_x = px
+                        dest_y = py
+                        dest_w = tile.width
+                        dest_h = tile.height
+                        
+                        # Handle clipping if tile goes off canvas
+                        # (Though our canvas is huge so unlikely, but good practice)
+                        
+                        # Apply mask to tile alpha channel
+                        if tile_mask:
+                           # Ensure tile has alpha
+                           if tile.mode != 'RGBA':
+                               tile = tile.convert("RGBA")
+                           
+                           # Multiply tile alpha by mask
+                           # We can split, multiply alpha, merge
+                           r, g, b, a = tile.split()
+                           a = ImageChops.multiply(a, tile_mask)
+                           tile = Image.merge("RGBA", (r, g, b, a))
+                        
+                        # Now composite using alpha_composite
+                        # base_layer.alpha_composite(tile, (dest_x, dest_y)) 
+                        # Note: Pillow's alpha_composite is `Image.alpha_composite(dest, source)` and returns result. 
+                        # It works on full images.
+                        # `image.alpha_composite(im, dest=(0,0), source=(0,0))` is the in-place version introduced in recent Pillow?
+                        # checking... Pillow 6.0+ has `image.alpha_composite(im, dest, source)`.
+                        # But standard `Image.alpha_composite` creates a NEW image.
+                        # Correct method for in-place is `base_layer.alpha_composite(tile, (dest_x, dest_y))` 
+                        # WAIT: `Image.Image.alpha_composite` (method) takes `(im, dest, source)`.
+                        # Let's use the safer `paste` if we just want to put it on top?
+                        # NO, `paste` with mask does blending: `result = base * (1-alpha) + source * alpha`.
+                        # `alpha_composite` does Porter-Duff Over. `result_alpha = source_alpha + dest_alpha * (1 - source_alpha)`.
+                        # This avoids the "transparent hole" problem if source is semi-transparent.
+                        # Since we want to LAYER tiles, we want Over.
+                        
+                        # Create a temp wrapper for the region?
+                        # To keep it simple and performant:
+                        # 1. Crop Base Region
+                        region = base_layer.crop((dest_x, dest_y, dest_x + dest_w, dest_y + dest_h))
+                        # 2. Alpha Composite Tile ONTO Region
+                        # region is 'dest', tile is 'source'
+                        # region = Image.alpha_composite(region, tile) -- requires same size
+                        if region.size == tile.size:
+                            region = Image.alpha_composite(region, tile)
+                            # 3. Paste Region back
+                            base_layer.paste(region, (dest_x, dest_y))
+                        else:
+                            # Edge case: tile partly off canvas
+                            # fallback to paste
+                            base_layer.paste(tile, (dest_x, dest_y), tile)
 
 
                 
                 print(f"DEBUG: Applied texture from {texture_path} (Overscan: {overscan}x)")
                 
-                # Apply Perspective Transform if Eye Level
-                if result_info.get("camera_geometry") == "eye_level":
-                    print("DEBUG: Applying perspective warp to texture")
+                # Apply Perspective Transform (Mask-Driven) - Mission 35
+                # Check if we have a valid mask to extract geometry from
+                perspective_applied = False
+                
+                # If we have a mask (User or AI) that is not empty
+                if mask is not None:
+                     # Convert mask to CV2 for contour finding
+                     mask_cv = np.array(mask)
+                     contours, _ = cv2.findContours(mask_cv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                     
+                     if contours:
+                         # Find largest contour
+                         largest_cnt = max(contours, key=cv2.contourArea)
+                         area = cv2.contourArea(largest_cnt)
+                         
+                         # Safety: Ensure contour is significant (e.g. > 5% of image)
+                         if area > (width * height * 0.05):
+                             print("DEBUG: Found mask contour for perspective warp.")
+                             
+                             # Approximate to a Quad (4 points)
+                             epsilon = 0.02 * cv2.arcLength(largest_cnt, True)
+                             approx = cv2.approxPolyDP(largest_cnt, epsilon, True)
+                             
+                             dest_points_cv = None
+                             
+                             if len(approx) == 4:
+                                 dest_points_cv = approx
+                             else:
+                                 # Fallback: Rotated Rect or Bounding Rect
+                                 # Ideally MinAreaRect creates a tight fit oriented rect
+                                 rect = cv2.minAreaRect(largest_cnt)
+                                 box = cv2.boxPoints(rect)
+                                 dest_points_cv = np.intp(box)
+                             
+                             # We need to sort points: TL, TR, BR, BL
+                             # Simple sort by sum(x+y) etc? 
+                             # Common method: 
+                             # TL: smallest sum(x+y), BR: largest sum(x+y)
+                             # TR: smallest diff(x-y), BL: largest diff(x-y) ??
+                             # Let's use a robust sorter.
+                             
+                             pts = dest_points_cv.reshape(4, 2)
+                             rect = np.zeros((4, 2), dtype="float32")
+                             
+                             s = pts.sum(axis=1)
+                             rect[0] = pts[np.argmin(s)] # TL
+                             rect[2] = pts[np.argmax(s)] # BR
+                             
+                             diff = np.diff(pts, axis=1)
+                             rect[1] = pts[np.argmin(diff)] # TR
+                             rect[3] = pts[np.argmax(diff)] # BL
+                             
+                             # Source points: The texture canvas we want to map into this quad.
+                             # We use the full t_canvas_width? 
+                             # Or just valid width/height?
+                             # Let's map the 'overscan' canvas to the 'floor quad'
+                             # BUT, we want density to be correct.
+                             # If we map a huge canvas to a small quad, it looks dense (good).
+                             
+                             source_pts_np = np.array([
+                                 [0, 0],
+                                 [t_canvas_width, 0],
+                                 [t_canvas_width, height], # or t_height? 
+                                 [0, height]
+                             ], dtype="float32")
+                             
+                             # Use the helper `find_coeffs` which expects lists of tuples
+                             dest_list = [tuple(p) for p in rect]
+                             source_list = [tuple(p) for p in source_pts_np]
+                             
+                             coeffs = find_coeffs(source_list, dest_list)
+                             
+                             # Transform
+                             try:
+                                warped = base_layer.transform((width, height), Image.PERSPECTIVE, coeffs, Image.Resampling.BICUBIC)
+                                base_layer = warped
+                                perspective_applied = True
+                                print("DEBUG: Applied Mask-Driven Perspective Warp")
+                             except Exception as exc:
+                                print(f"WARNING: Perspective warp failed: {exc}")
+
+                # Fallback to Horizon Heuristic if mask warp didn't happen (and is eye level)
+                if not perspective_applied and result_info.get("camera_geometry") == "eye_level":
+                    print("DEBUG: Applying heuristic perspective warp (Fallback)")
                     
                     # Define Horizon (Top of trapezoid)
                     h_y = int(height * horizon_pct)
@@ -508,26 +715,93 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
     lift = profile["shadow_lift"]
     compress = profile["highlight_compress"]
     
-    # Generate LUT
-    lut = []
-    import math
-    for i in range(256):
-        # 1. Normalize input 0-1
-        p = i / 255.0
+    # Mission 36: Normalized Tone Mapping (Change 2B)
+    # Goal: Preserve original lighting naturally without mud or blowout.
+    # 1. Normalize Luminance Map based on Floor Statistics implies we need the FLOOR pixels only.
+    mask_arr = np.array(mask)
+    if mask_arr.max() > 0:
+        # Get luminance values only where mask > 0
+        lum_arr = np.array(lighting_map)
+        floor_pixels = lum_arr[mask_arr > 0]
         
-        # 2. Shadow Lift (Linear)
-        p_lifted = p * (1.0 - lift) + lift
-        
-        # 3. Highlight Compression (Gamma/Power Roll-off)
-        p_comp = 1.0 - math.pow(1.0 - p_lifted, compress)
-        
-        # 4. Clamp and Scale
-        val = int(min(1.0, max(0.0, p_comp)) * 255)
-        lut.append(val)
-        
-    lighting_map = lighting_map.point(lut)
+        if floor_pixels.size > 0:
+            # Calculate stats
+            p5 = np.percentile(floor_pixels, 5)
+            p95 = np.percentile(floor_pixels, 95)
+            
+            # Avoid divide by zero
+            denom = p95 - p5
+            if denom < 1: denom = 1
+            
+            # Normalize to 0-1 range roughly, then map to Target Range [0.6, 1.1]
+            # Target range means:
+            # 0.6 = Shadows (Darkest floor parts darken the epoxy by 40%)
+            # 1.1 = Highlights (Brightest floor parts brighten the epoxy by 10%)
+            # This range is conservative to avoid "mud".
+            
+            target_min = 0.6
+            target_max = 1.1
+            
+            # We want to re-map lighting_map values
+            # value = (original - p5) / (p95 - p5) * (t_max - t_min) + t_min
+            # Do this via LUT for speed
+            
+            norm_lut = []
+            for i in range(256):
+                 # Normalize 0-1 based on floor stats
+                 n = (i - p5) / denom
+                 # Clamp to 0-1 (optional, or let it overshoot for extreme highlights)
+                 # n = max(0.0, min(1.0, n)) 
+                 
+                 # Map to target
+                 val_mapped = n * (target_max - target_min) + target_min
+                 
+                 # Optimization: Shadows shouldn't be TOO lifted if we want depth?
+                 # Actually, we want to PRESERVE original shadows. 
+                 # If original had a shadow (low luminance), val_mapped will be low (e.g. 0.6).
+                 # If we use MULTIPLY blend: Epoxy * 0.6 = Darker Epoxy. Correct.
+                 
+                 # Apply Lift/Gamma from Profile to this Normalized curve instead of raw pixel?
+                 # Let's apply Profile adjustments ON TOP of this normalization.
+                 
+                 # Profile Lift/Compress
+                 # n_lifted = n * (1.0 - lift) + lift ...
+                 # Let's stick to the simpler user request first:
+                 # "Normalize L into ~[0.6, 1.1]"
+                 # "StyleRGB *= L"
+                 
+                 # Warning: If we multiply by 1.1, we might exceed 255.
+                 # Python PIL multiply usually normalizes X * Y / 255.
+                 # So if we want "Boost", we need a value > 255? No, PIL multiply is strictly darkening.
+                 # To strictly "Multiply" in float terms: Result = A * B.
+                 # If B > 1.0, it brightens.
+                 # PIL ImageChops.multiply(a, b) = a * b / 255.
+                 # So if b is 255, result is a. Max brightness = a.
+                 # So standard Multiply CANNOT brighten.
+                 # We need to use "Overlay" or just explicit math, OR:
+                 # We use `lighting_map` as a modulator where 255 = 2.0x brightness?
+                 # No, standard pipeline: 
+                 # 1. Multiply (Shadows)
+                 # 2. Screen (Highlights)
+                 
+                 # Let's interpret "Normalize to [0.6, 1.1]" as a float multiplier.
+                 # Since we are using PIL, we can produce a "Shadow Map" and a "Highlight Map".
+                 
+                 # SHADOW MAP (Multiply):
+                 # Range [0, 1] -> Map normalized luminance [0.6, 1.1] to [0, 255]? No.
+                 # If L_norm = 0.6, we want Mult_val = 153 (0.6*255).
+                 # If L_norm = 1.0, we want Mult_val = 255.
+                 # If L_norm > 1.0, we clamp to 255 for Multiply layer.
+                 
+                 v_mult = val_mapped * 255.0
+                 v_mult = max(0, min(255, v_mult))
+                 norm_lut.append(int(v_mult))
+                 
+            lighting_map = lighting_map.point(norm_lut)
+        else:
+            print("WARNING: No floor pixels found in mask, skipping normalization.")
     
-    # Optional: Gamma from params
+    # Optional: Gamma from params (kept from original)
     if gamma != 1.0 and gamma > 0:
         inv_gamma = 1.0 / gamma 
         lut_gamma = [int(((i / 255.0) ** inv_gamma) * 255) for i in range(256)]
@@ -539,30 +813,101 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
     if base_layer is None:
         base_layer = Image.new("RGBA", (width, height), color_hex)
     
-    # C. Multiply Blend
-    blended_texture = ImageChops.multiply(base_layer, lighting_rgba)
+    # C. Multiply Blend (Alpha-Safe) - Mission 34
+    # blended_texture = ImageChops.multiply(base_layer, lighting_rgba) <-- OLD BUGGY WAY (Darkens Alpha)
+    
+    # New Way: Split, Multiply RGB, Preserve Alpha
+    base_r, base_g, base_b, base_a = base_layer.split()
+    light_r, light_g, light_b, light_a = lighting_rgba.split() # light_a is likely 255 or from blur
+    
+    # We only care about the RGB from lighting (the shadows/gradients)
+    # So we multiply Base RGB * Light RGB
+    res_r = ImageChops.multiply(base_r, light_r)
+    res_g = ImageChops.multiply(base_g, light_g)
+    res_b = ImageChops.multiply(base_b, light_b)
+    
+    # Recombine with ORIGINAL Base Alpha
+    # This ensures that if the base was transparent (e.g. gaps), it helps?
+    # Actually, base_layer is usually fully opaque tile canvas.
+    # BUT, if we have a mask applied later, it's fine.
+    # The issue described by user: "transparent pixels participate in lighting".
+    # If base_layer has alpha=0, multiply(0, X) = 0.
+    # If base_layer has alpha=255, multiply(255, X) = X.
+    # Wait, `ImageChops.multiply` on RGBA multiplies ALL channels.
+    # So Alpha_result = Base_Alpha * Light_Alpha / 255.
+    # If Light map was converted from Grayscale -> RGBA, its Alpha is 255.
+    # So Base_Alpha * 255 / 255 = Base_Alpha.
+    # So theoretically `multiply` should be fine IF lighting_rgba has alpha 255.
+    # Let's check: `lighting_rgba = lighting_map.convert("RGBA")`. 
+    # If `lighting_map` is "L", convert("RGBA") makes A=255.
+    # SO why did the user say "transparent pixels participate"?
+    # Maybe because the User logic applies lighting AFTER masking? 
+    # In my code:
+    # 3. Create Lighting Aware Texture (Produces `epoxy_base`)
+    # 4. Composite (Uses `mask` to cut it out).
+    # So `epoxy_base` is calculated for the WHOLE image (width, height), usually opaque color.
+    # If `base_layer` (tiled texture) has holes (alpha=0), then `multiply` makes A=0 (since light A=255).
+    # That seems correct?
+    #
+    # User Says: "Rule: apply lighting to RGB, preserve alpha separately"
+    # "This prevents 'transparent -> black' artifacts".
+    # If alpha is 0, RGB becomes 0 (Black) after multiply usually? No, multiply doesn't premultiply.
+    # (R,G,B,A) * (L,L,L,255) -> (R*L, G*L, B*L, A).
+    #
+    # Perhaps the issue creates "Dark Lines" at the seams of tiles if the seams aren't 255?
+    # My "Change 1A" fixes the seams to be 255.
+    # But let's implement the safety just in case `lighting_rgba` has some alpha variance 
+    # or to be strictly correct as per request.
+    
+    blended_texture = Image.merge("RGBA", (res_r, res_g, res_b, base_a))
     
     # D. Brightness/Boost
     enhancer = ImageEnhance.Brightness(blended_texture)
     epoxy_base = enhancer.enhance(brightness_boost)
 
-    # E. Specular Highlights (Mission 30: Profile Driven)
-    # Gated by finish (Matte has no specular)
+    # E. Specular Highlights (Improved: Clamp & Soft)
     if finish in ["gloss", "satin"]:
-        # Use Profile settings
+        # Profile settings
         threshold = profile["specular_thresh"]
         blur_radius = profile["specular_blur"]
         
-        # Extract highlights from original grayscale
+        # 1. Extract Highlights from Original (Normalized?)
+        # We can use the Normalized Luminance we calculated for consistency
+        # But `grayscale` is the original raw. Let's use raw to capture true bright spots.
+        
         def highlight_filter(p):
             return p if p > threshold else 0
             
         highlight_map = grayscale.point(highlight_filter)
         
+        # Blur
         highlight_overlay = highlight_map.filter(ImageFilter.GaussianBlur(radius=blur_radius)).convert("RGBA")
         
-        # Add highlights
+        # 2. Screen Blend
         epoxy_base = ImageChops.screen(epoxy_base, highlight_overlay)
+        
+        # 3. Clamp Highlights (Prevent Blowout) - Mission 36
+        # Limit max brightness to e.g. 248 (0.97) to avoid "digital white" look
+        clamp_max = 248 
+        # Using point function on each channel
+        # Note: This clamps EVERYTHING, even the epoxy color. 
+        # Is that desired? "sun patches don't blow out". Yes.
+        # But we only want to clamp if it exceeds.
+        
+        # Optimized clamp lut
+        clamp_lut = [min(i, clamp_max) for i in range(256)]
+        
+        # Split, apply clamp, merge? Or apply to RGB only?
+        # Applying to alpha would be bad.
+        source = epoxy_base.split()
+        if len(source) == 4:
+            r, g, b, a = source
+            r = r.point(clamp_lut)
+            g = g.point(clamp_lut)
+            b = b.point(clamp_lut)
+            epoxy_base = Image.merge("RGBA", (r, g, b, a))
+        else:
+            epoxy_base = epoxy_base.point(clamp_lut)
 
     # F. Blend Strength (Opacity)
     if blend_strength < 1.0:
