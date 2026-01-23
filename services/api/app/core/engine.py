@@ -319,21 +319,89 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                 t_canvas_width = width * overscan
                 base_layer = Image.new("RGBA", (t_canvas_width, height))
                 
-                # Tile texture across the huge canvas
-                # Use Staggered Grid (Running Bond) to avoid horizontal lines/seams alignment
-                repeats_x = (t_canvas_width // t_width) + 1
-                repeats_y = (height // t_height) + 2
+                # Helper: Create Noise Mask for Edge Blending
+                def create_edge_mask(mask_w, mask_h, overlap_px):
+                    mask = Image.new("L", (mask_w, mask_h), 255)
+                    if overlap_px <= 0:
+                        return mask
+                        
+                    draw = ImageDraw.Draw(mask)
+                    # Create linear gradient fade at edges
+                    fade_len = int(overlap_px * 1.5)
+                    if fade_len > 0:
+                        # Horizontal fades
+                        for x in range(fade_len):
+                            alpha = int(255 * (x / fade_len))
+                            draw.line((x, 0, x, mask_h), fill=alpha)
+                            draw.line((mask_w - 1 - x, 0, mask_w - 1 - x, mask_h), fill=alpha)
+                        # Vertical fades
+                        v_mask = Image.new("L", (mask_w, mask_h), 255)
+                        v_draw = ImageDraw.Draw(v_mask)
+                        for y in range(fade_len):
+                            alpha = int(255 * (y / fade_len))
+                            v_draw.line((0, y, mask_w, y), fill=alpha)
+                            v_draw.line((0, mask_h - 1 - y, mask_w, mask_h - 1 - y), fill=alpha)
+                        mask = ImageChops.multiply(mask, v_mask)
+                    return mask
+
+                # Overlap Logic
+                # Overlap by 15% of tile size
+                overlap_pct = 0.15
+                overlap_px = int(min(t_width, t_height) * overlap_pct)
+                step_x = max(1, t_width - overlap_px)
+                step_y = max(1, t_height - overlap_px)
+                
+                repeats_x = (t_canvas_width // step_x) + 2
+                repeats_y = (height // step_y) + 2
+                 
+                import random
                 
                 for ix in range(repeats_x):
                     # Stagger odd columns by half height to break horizontal grid lines
-                    y_shift = (t_height // 2) if (ix % 2 == 1) else 0
+                    y_shift = (step_y // 2) if (ix % 2 == 1) else 0
                     
                     for iy in range(repeats_y):
-                        px = ix * t_width
-                        py = (iy * t_height) - y_shift
+                        px = (ix * step_x) - overlap_px
+                        py = (iy * step_y) - y_shift - overlap_px
                         
-                        # Clip check not needed, paste handles it
-                        base_layer.paste(texture, (px, py))
+                        # MISSION 21: Randomization
+                        # Randomize each tile to break repetition
+                        tile = texture.copy()
+                        
+                        # 1. Random Rotation (only if square or 180)
+                        is_square = (t_width == t_height)
+                        rot_choices = [0, 180]
+                        if is_square:
+                            rot_choices.extend([90, 270])
+                        
+                        rot = random.choice(rot_choices)
+                        if rot > 0:
+                             tile = tile.rotate(rot)
+                        
+                        # 2. Random Mirroring
+                        if random.random() > 0.5:
+                             tile = ImageOps.mirror(tile) # Flip L/R
+                        if random.random() > 0.5:
+                             tile = ImageOps.flip(tile)   # Flip T/B
+                             
+                        # 3. Scale Jitter (Zoom in 0-10% to add variation without gaps)
+                        if random.random() > 0.3: # Apply to 70% of tiles
+                            scale = 1.0 + (random.random() * 0.1)
+                            nw = int(t_width * scale)
+                            nh = int(t_height * scale)
+                            tile = tile.resize((nw, nh), Image.Resampling.BILINEAR)
+                            
+                            # Center Crop
+                            left = (nw - t_width) // 2
+                            top = (nh - t_height) // 2
+                            tile = tile.crop((left, top, left + t_width, top + t_height))
+
+                        # Generate Edge Mask for Blending
+                        tile_mask = create_edge_mask(tile.width, tile.height, overlap_px)
+                        
+                        # Paste with Mask (Alpha Blending)
+                        base_layer.paste(tile, (px, py), mask=tile_mask)
+
                 
                 print(f"DEBUG: Applied texture from {texture_path} (Overscan: {overscan}x)")
                 

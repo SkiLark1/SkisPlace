@@ -47,6 +47,32 @@ async def upload_asset(
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+            
+        # MISSION 20: Seamless Tile Conversion
+        # Automatically convert to 2x2 mirror tile
+        try:
+            from PIL import Image, ImageOps
+            img = Image.open(file_path).convert("RGBA")
+            w, h = img.size
+            if w > 0 and h > 0:
+                canvas = Image.new("RGBA", (w * 2, h * 2))
+                # TL: Orig
+                canvas.paste(img, (0, 0))
+                # TR: Mirror X
+                mx = ImageOps.mirror(img)
+                canvas.paste(mx, (w, 0))
+                # BL: Mirror Y
+                my = ImageOps.flip(img)
+                canvas.paste(my, (0, h))
+                # BR: Mirror XY
+                mxy = ImageOps.flip(mx)
+                canvas.paste(mxy, (w, h))
+                
+                canvas.save(file_path)
+                print(f"DEBUG: Converted {file.filename} to seamless tile")
+        except Exception as se:
+            print(f"WARN: Seamless conversion failed: {se}")
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not save file: {e}")
         
