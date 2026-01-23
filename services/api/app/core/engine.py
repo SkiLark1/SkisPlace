@@ -87,9 +87,72 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
         is_top_down = result_info.get("camera_geometry") == "top_down"
         
         if is_top_down:
-            # Top-Down: Full coverage by default
-            print("DEBUG: Top-Down geometry detected - using full base mask")
-            mask = Image.new("L", (width, height), 255)
+            # Top-Down: AI-first strategy (NOT full white)
+            print("DEBUG: Top-Down geometry detected - using AI-first strategy")
+            ai_mask_used = False
+            
+            # Try AI mask directly for top-down
+            if ai_config and ai_config.get("enabled", False):
+                try:
+                    geometry_hint = "top_down"
+                    # Check if AI model is actually loaded
+                    segmenter = FloorSegmenter.instance()
+                    if not segmenter.session:
+                        print(f"DEBUG: AI Model NOT loaded (path: {segmenter.model_path})")
+                    else:
+                        # Use stricter threshold for top-down
+                        min_floor_prob = float(ai_config.get("min_floor_prob", 0.4))
+                        prob_map = segmenter.get_probability_map(original, geometry_hint=geometry_hint)
+                        
+                        if prob_map:
+                            import numpy as np
+                            # Apply stricter threshold for top-down
+                            threshold_255 = int(min_floor_prob * 255)
+                            print(f"DEBUG: Top-Down AI - Using min_floor_prob threshold: {min_floor_prob} ({threshold_255}/255)")
+                            mask = prob_map.point(lambda p: 255 if p >= threshold_255 else 0)
+                            result_info["mask_source"] = "ai_direct"
+                            ai_mask_used = True
+                            print("DEBUG: Top-Down AI mask applied directly")
+                except Exception as e:
+                    print(f"DEBUG: Top-Down AI mask failed: {e}")
+            
+            # Fallback: Center-weighted vignette (not full white)
+            if not ai_mask_used:
+                print("DEBUG: Top-Down fallback - using center-weighted vignette")
+                mask = Image.new("L", (width, height), 255)
+                draw = ImageDraw.Draw(mask)
+                
+                # Create vignette: fade to 0 near edges
+                border_pct = 0.08  # 8% border kill zone
+                fade_pct = 0.12   # 12% fade zone
+                
+                border_x = int(width * border_pct)
+                border_y = int(height * border_pct)
+                fade_x = int(width * fade_pct)
+                fade_y = int(height * fade_pct)
+                
+                # Horizontal edge suppression
+                for x in range(border_x + fade_x):
+                    if x < border_x:
+                        alpha = 0
+                    else:
+                        alpha = int(255 * ((x - border_x) / fade_x))
+                    draw.line((x, 0, x, height), fill=alpha)
+                    draw.line((width - 1 - x, 0, width - 1 - x, height), fill=alpha)
+                
+                # Vertical edge suppression (multiply with existing)
+                v_mask = Image.new("L", (width, height), 255)
+                v_draw = ImageDraw.Draw(v_mask)
+                for y in range(border_y + fade_y):
+                    if y < border_y:
+                        alpha = 0
+                    else:
+                        alpha = int(255 * ((y - border_y) / fade_y))
+                    v_draw.line((0, y, width, y), fill=alpha)
+                    v_draw.line((0, height - 1 - y, width, height - 1 - y), fill=alpha)
+                
+                mask = ImageChops.multiply(mask, v_mask)
+                result_info["mask_source"] = "heuristic_vignette"
         else:
             # Eye-Level: Vertical Gradient
             mask_start = float(parameters.get("mask_start", 0.45))
@@ -113,72 +176,86 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                     draw.line((0, y, width, y), fill=alpha_val)
 
     # C. AI Refinement (If enabled and not user mask)
-    if mask_source == "heuristic" and ai_config and ai_config.get("enabled", False):
-        try:
-            import numpy as np
-            from scipy import ndimage
-            
-            confidence = float(ai_config.get("confidence_threshold", 0.5))
-            print(f"DEBUG: Attempting AI Refinement. Removal Confidence Threshold: {confidence}")
-            
-            # Get raw probability map (0-255) - Pass geometry hint for letterbox/squash selection
-            geometry_hint = result_info.get("camera_geometry", "unknown")
-            prob_map = FloorSegmenter.instance().get_probability_map(original, geometry_hint=geometry_hint)
-            
-            if prob_map:
-                # Calculate keep threshold in 0-255 range
-                keep_threshold = int((1.0 - confidence) * 255)
-                keep_threshold = max(1, min(254, keep_threshold))
+    # Skip if mask_source is already AI-based (ai_direct, etc.)
+    if mask_source == "heuristic" or mask_source == "heuristic_vignette":
+        if ai_config and ai_config.get("enabled", False):
+            try:
+                import numpy as np
+                from scipy import ndimage
                 
-                print(f"DEBUG: AI Refinement - Keeping pixels with Floor Prob >= {keep_threshold}/255")
+                confidence = float(ai_config.get("confidence_threshold", 0.5))
                 
-                # Create binary refinement mask: White = Keep, Black = Remove
-                refinement_mask = prob_map.point(lambda p: 255 if p >= keep_threshold else 0)
+                # Geometry-aware min_floor_prob_to_keep threshold
+                geometry_hint = result_info.get("camera_geometry", "unknown")
+                is_top_down = geometry_hint == "top_down"
                 
-                # --- SANITY CHECK ---
-                ai_arr = np.array(refinement_mask)
-                total_pixels = ai_arr.size
-                white_pixels = np.sum(ai_arr > 127)
-                coverage = white_pixels / total_pixels if total_pixels > 0 else 0.0
+                # Stricter threshold for top-down to prevent over-prediction
+                default_min_floor_prob = 0.45 if is_top_down else 0.25
+                min_floor_prob = float(ai_config.get("min_floor_prob_to_keep", default_min_floor_prob))
                 
-                print(f"DEBUG: AI Mask Coverage: {coverage*100:.1f}%")
+                print(f"DEBUG: Attempting AI Refinement. Removal Confidence: {confidence}, Min Floor Prob: {min_floor_prob} (geometry: {geometry_hint})")
                 
-                # Coverage Thresholds
-                MIN_COVERAGE = 0.08  # 8%
+                # Get raw probability map (0-255) - Pass geometry hint for letterbox/squash selection
+                prob_map = FloorSegmenter.instance().get_probability_map(original, geometry_hint=geometry_hint)
                 
-                if coverage < MIN_COVERAGE:
-                    # AI mask is too small - use Hybrid Fallback
-                    print(f"DEBUG: AI coverage too low ({coverage*100:.1f}% < {MIN_COVERAGE*100:.1f}%). Using Hybrid Fallback (Union).")
+                if prob_map:
+                    # Calculate keep threshold: max of confidence-based and min_floor_prob
+                    confidence_threshold_255 = int((1.0 - confidence) * 255)
+                    min_floor_threshold_255 = int(min_floor_prob * 255)
                     
-                    # Hybrid = Union of heuristic base and AI mask
-                    base_arr = np.array(mask)
-                    combined_arr = np.maximum(base_arr, ai_arr)
-                    mask = Image.fromarray(combined_arr.astype(np.uint8), mode="L")
-                    result_info["mask_source"] = "ai_hybrid_fallback"
+                    # Use the STRICTER (higher) of the two thresholds
+                    keep_threshold = max(confidence_threshold_255, min_floor_threshold_255)
+                    keep_threshold = max(1, min(254, keep_threshold))
+                
+                    print(f"DEBUG: AI Refinement - Keeping pixels with Floor Prob >= {keep_threshold}/255")
+                    
+                    # Create binary refinement mask: White = Keep, Black = Remove
+                    refinement_mask = prob_map.point(lambda p: 255 if p >= keep_threshold else 0)
+                    
+                    # --- SANITY CHECK ---
+                    ai_arr = np.array(refinement_mask)
+                    total_pixels = ai_arr.size
+                    white_pixels = np.sum(ai_arr > 127)
+                    coverage = white_pixels / total_pixels if total_pixels > 0 else 0.0
+                    
+                    print(f"DEBUG: AI Mask Coverage: {coverage*100:.1f}%")
+                    
+                    # Coverage Thresholds
+                    MIN_COVERAGE = 0.08  # 8%
+                    
+                    if coverage < MIN_COVERAGE:
+                        # AI mask is too small - use Hybrid Fallback
+                        print(f"DEBUG: AI coverage too low ({coverage*100:.1f}% < {MIN_COVERAGE*100:.1f}%). Using Hybrid Fallback (Union).")
+                        
+                        # Hybrid = Union of heuristic base and AI mask
+                        base_arr = np.array(mask)
+                        combined_arr = np.maximum(base_arr, ai_arr)
+                        mask = Image.fromarray(combined_arr.astype(np.uint8), mode="L")
+                        result_info["mask_source"] = "ai_hybrid_fallback"
+                    else:
+                        # Apply AI refinement normally
+                        # First, Apply Largest Connected Component Filter
+                        binary_mask = (ai_arr > 127).astype(np.uint8)
+                        labeled, num_features = ndimage.label(binary_mask)
+                        
+                        if num_features > 1:
+                            component_sizes = ndimage.sum(binary_mask, labeled, range(1, num_features + 1))
+                            largest_label = np.argmax(component_sizes) + 1
+                            binary_mask = (labeled == largest_label).astype(np.uint8)
+                            refinement_mask = Image.fromarray((binary_mask * 255).astype(np.uint8), mode="L")
+                            print(f"DEBUG: Connected Component Filter: Kept largest of {num_features} regions.")
+                        
+                        # Combine: Final = Base * Refinement
+                        mask = ImageChops.multiply(mask, refinement_mask)
+                        result_info["mask_source"] = "ai_refined"
+                        
+                    print("DEBUG: AI Refinement step complete")
                 else:
-                    # Apply AI refinement normally
-                    # First, Apply Largest Connected Component Filter
-                    binary_mask = (ai_arr > 127).astype(np.uint8)
-                    labeled, num_features = ndimage.label(binary_mask)
-                    
-                    if num_features > 1:
-                        component_sizes = ndimage.sum(binary_mask, labeled, range(1, num_features + 1))
-                        largest_label = np.argmax(component_sizes) + 1
-                        binary_mask = (labeled == largest_label).astype(np.uint8)
-                        refinement_mask = Image.fromarray((binary_mask * 255).astype(np.uint8), mode="L")
-                        print(f"DEBUG: Connected Component Filter: Kept largest of {num_features} regions.")
-                    
-                    # Combine: Final = Base * Refinement
-                    mask = ImageChops.multiply(mask, refinement_mask)
-                    result_info["mask_source"] = "ai_refined"
-                    
-                print("DEBUG: AI Refinement step complete")
-            else:
-                 print("DEBUG: AI Segmentation returned no probability map")
-        except Exception as e:
-            print(f"ERROR: AI Refinement failed: {e}")
-            import traceback
-            traceback.print_exc()
+                    print("DEBUG: AI Segmentation returned no probability map")
+            except Exception as e:
+                print(f"ERROR: AI Refinement failed: {e}")
+                import traceback
+                traceback.print_exc()
 
     # D. Edge Feathering (Geometry & Source Aware)
     # Apply feathering if it's Eye-Level AND (Heuristic OR AI-Refined)
@@ -197,15 +274,39 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
 
     mask = mask.filter(ImageFilter.GaussianBlur(radius=mask_blur))
     
+    # E. Compute Mask Stats (always, for debugging)
+    import numpy as np
+    mask_arr = np.array(mask)
+    result_info["mask_stats"] = {
+        "mean": float(np.mean(mask_arr)),
+        "min": int(np.min(mask_arr)),
+        "max": int(np.max(mask_arr)),
+        "pct_white": float(np.sum(mask_arr >= 250) / mask_arr.size * 100),
+        "pct_black": float(np.sum(mask_arr <= 5) / mask_arr.size * 100)
+    }
+    print(f"DEBUG: Mask Stats - Mean: {result_info['mask_stats']['mean']:.1f}, White%: {result_info['mask_stats']['pct_white']:.1f}%, Black%: {result_info['mask_stats']['pct_black']:.1f}%")
+    
     if debug:
         try:
             import uuid
+            # Save final mask
             mask_filename = f"mask_{uuid.uuid4()}.png"
             mask_path = os.path.join(os.path.dirname(output_path), mask_filename)
             mask.save(mask_path)
             result_info["mask_filename"] = mask_filename
+            
+            # Save probability map if AI was used
+            if ai_config and ai_config.get("enabled", False):
+                geometry_hint = result_info.get("camera_geometry", "unknown")
+                prob_map = FloorSegmenter.instance().get_probability_map(original, geometry_hint=geometry_hint)
+                if prob_map:
+                    probmap_filename = f"probmap_{uuid.uuid4()}.png"
+                    probmap_path = os.path.join(os.path.dirname(output_path), probmap_filename)
+                    prob_map.save(probmap_path)
+                    result_info["probmap_filename"] = probmap_filename
+                    print(f"DEBUG: Saved probability map: {probmap_filename}")
         except Exception as e:
-            print(f"Failed to save debug mask: {e}")
+            print(f"Failed to save debug assets: {e}")
 
     # 3. Create Lighting-Aware Epoxy Texture
     # Parameters

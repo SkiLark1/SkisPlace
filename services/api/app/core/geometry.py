@@ -61,12 +61,16 @@ def detect_camera_geometry(image: Image.Image, debug: bool = False) -> str:
         peakedness = peak_strength / (mean_energy + 0.001)
         
         # Thresholds derived from heuristics
-        # Strong horizon usually > 3.5 peakedness and > 0.4 relative strength (if normalized against global max)
+        # Strong horizon usually > 2.5 peakedness and > 0.3 relative strength (if normalized against global max)
+        # Note: Lowered from 3.0 to 2.5 to catch more eye-level images
         
         is_eye_level = False
         
-        # If we have a very distinct line
-        if peakedness > 3.0 and peak_strength > 0.3:
+        # If we have a distinct line (lowered threshold)
+        if peakedness > 2.5 and peak_strength > 0.3:
+            is_eye_level = True
+        # Secondary check: very strong peak even with lower peakedness
+        elif peakedness > 1.8 and peak_strength > 0.6:
             is_eye_level = True
             
         if debug:

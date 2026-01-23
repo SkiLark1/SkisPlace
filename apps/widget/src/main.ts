@@ -328,7 +328,7 @@ async function initWidget() {
           <div class="sp-img-display" id="sp-img-container">
             <div class="sp-img-stage" id="sp-img-stage">
               <img src="${state.resultUrl}" class="sp-main-img" id="sp-result-img" />
-              ${state.maskUrl ? '<img src="' + state.maskUrl + '" class="sp-mask-overlay" id="sp-mask-overlay" style="display:none; opacity: 0.5;" />' : ''}
+              ${state.maskUrl ? `<div class="sp-mask-tint" id="sp-mask-tint" style="display:none; opacity: 0.5; -webkit-mask-image: url('${state.maskUrl}'); mask-image: url('${state.maskUrl}');"></div>` : ''}
             </div>
           </div>
 
@@ -337,11 +337,30 @@ async function initWidget() {
             <div class="sp-debug-header">Visual Debug</div>
             <div class="sp-debug-row">
               <span class="sp-debug-label">Mask Source</span>
-              <span class="sp-debug-value">${state.debugData?.mask_source || 'Unknown'}</span>
+              <span class="sp-debug-value">${(() => {
+            const src = state.debugData?.mask_source || 'unknown';
+            const labels: { [key: string]: string } = {
+              'heuristic': 'Heuristic',
+              'heuristic_vignette': 'Heuristic (Vignette)',
+              'ai_direct': 'AI (Direct)',
+              'ai_refined': 'AI (Refined)',
+              'ai_hybrid_fallback': 'AI (Hybrid)',
+              'user': 'User Edited'
+            };
+            return labels[src] || src;
+          })()}</span>
             </div>
             <div class="sp-debug-row">
               <span class="sp-debug-label">Camera</span>
               <span class="sp-debug-value">${state.debugData?.camera_geometry || 'Unknown'}</span>
+            </div>
+            <div class="sp-debug-row">
+              <span class="sp-debug-label">AI Enabled</span>
+              <span class="sp-debug-value">${state.debugData?.ai_config_resolved?.enabled ? '✓ Yes' : '✗ No'}</span>
+            </div>
+            <div class="sp-debug-row">
+              <span class="sp-debug-label">AI Model</span>
+              <span class="sp-debug-value">${state.debugData?.ai_model_loaded ? '✓ Loaded' : '✗ Not Loaded'}</span>
             </div>
             <div class="sp-debug-row">
               <span class="sp-debug-label">Blend Strength</span>
@@ -351,6 +370,22 @@ async function initWidget() {
               <span class="sp-debug-label">Finish Type</span>
               <span class="sp-debug-value">${state.tuning.finish.charAt(0).toUpperCase() + state.tuning.finish.slice(1)}</span>
             </div>
+            ${state.debugData?.mask_stats ? `
+            <div class="sp-debug-row">
+              <span class="sp-debug-label">Mask Mean</span>
+              <span class="sp-debug-value">${state.debugData.mask_stats.mean?.toFixed(1) || 'N/A'}</span>
+            </div>
+            <div class="sp-debug-row">
+              <span class="sp-debug-label">White/Black</span>
+              <span class="sp-debug-value">${state.debugData.mask_stats.pct_white?.toFixed(1) || '0'}% / ${state.debugData.mask_stats.pct_black?.toFixed(1) || '0'}%</span>
+            </div>
+            ` : ''}
+            ${state.debugData?.probmap_url ? `
+            <div class="sp-debug-row">
+              <span class="sp-debug-label">Prob Map</span>
+              <a href="${state.debugData.probmap_url}" target="_blank" class="sp-debug-value" style="color:#60a5fa;">View</a>
+            </div>
+            ` : ''}
             ${state.maskUrl ? `
             <div class="sp-debug-row">
               <span class="sp-debug-label">Mask Opacity</span>
@@ -365,7 +400,7 @@ async function initWidget() {
 
       // Toggle Logic
       const imgEl = content.querySelector('#sp-result-img') as HTMLImageElement;
-      const maskOverlay = content.querySelector('#sp-mask-overlay') as HTMLImageElement | null;
+      const maskTint = content.querySelector('#sp-mask-tint') as HTMLDivElement | null;
       const btns = content.querySelectorAll('.sp-toggle-btn');
       btns.forEach(btn => {
         (btn as HTMLButtonElement).onclick = () => {
@@ -374,16 +409,16 @@ async function initWidget() {
           const view = (btn as HTMLButtonElement).dataset.view;
           if (view === 'original') {
             imgEl.src = state.uploadedImageUrl!;
-            if (maskOverlay) maskOverlay.style.display = 'none';
+            if (maskTint) maskTint.style.display = 'none';
           } else if (view === 'mask') {
             imgEl.src = state.maskUrl!;
-            if (maskOverlay) maskOverlay.style.display = 'none';
+            if (maskTint) maskTint.style.display = 'none';
           } else if (view === 'overlay') {
             imgEl.src = state.uploadedImageUrl!;
-            if (maskOverlay) maskOverlay.style.display = 'block';
+            if (maskTint) maskTint.style.display = 'block';
           } else {
             imgEl.src = state.resultUrl!;
-            if (maskOverlay) maskOverlay.style.display = 'none';
+            if (maskTint) maskTint.style.display = 'none';
           }
         };
       });
@@ -392,10 +427,10 @@ async function initWidget() {
       if (debugMode && state.maskUrl) {
         const opacitySlider = document.getElementById('sp-mask-opacity') as HTMLInputElement;
         const opacityVal = document.getElementById('sp-opacity-val');
-        if (opacitySlider && maskOverlay) {
+        if (opacitySlider && maskTint) {
           opacitySlider.oninput = () => {
             const val = parseFloat(opacitySlider.value);
-            maskOverlay.style.opacity = val.toString();
+            maskTint.style.opacity = val.toString();
             if (opacityVal) opacityVal.innerText = (val * 100).toFixed(0) + '%';
           };
         }

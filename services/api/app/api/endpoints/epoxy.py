@@ -36,6 +36,10 @@ class PreviewResponse(BaseModel):
     mask_url: str | None = None
     mask_source: str | None = None
     camera_geometry: str | None = None
+    mask_stats: dict | None = None
+    probmap_url: str | None = None
+    ai_config_resolved: dict | None = None
+    ai_model_loaded: bool | None = None
 
 # --- Endpoints ---
 
@@ -220,11 +224,14 @@ async def create_preview_job(
             base_url = str(request.base_url).rstrip("/")
             result_url = ""
             mask_url = None
+            probmap_url = None
             
             if process_success:
                  result_url = f"{base_url}/static/uploads/{output_filename}"
                  if debug and result.get("mask_filename"):
                      mask_url = f"{base_url}/static/uploads/{result['mask_filename']}"
+                 if debug and result.get("probmap_filename"):
+                     probmap_url = f"{base_url}/static/uploads/{result['probmap_filename']}"
             else:
                  # Fallback to original
                  result_url = f"{base_url}/static/uploads/{found_file}"
@@ -234,12 +241,27 @@ async def create_preview_job(
         else:
              return JSONResponse(status_code=404, content={"status": "error", "message": "Image not found"})
 
+        # Prepare AI debug fields (only when debug=True)
+        ai_config_resolved_out = None
+        ai_model_loaded_out = None
+        if debug:
+            ai_config_resolved_out = ai_config
+            try:
+                from app.core.segmentation import FloorSegmenter
+                ai_model_loaded_out = FloorSegmenter.instance().session is not None
+            except Exception:
+                ai_model_loaded_out = False
+
         return PreviewResponse(
             status="success" if process_success else "error",
             result_url=result_url,
             mask_url=mask_url,
             mask_source=result.get("mask_source"),
-            camera_geometry=result.get("camera_geometry")
+            camera_geometry=result.get("camera_geometry"),
+            mask_stats=result.get("mask_stats"),
+            probmap_url=probmap_url,
+            ai_config_resolved=ai_config_resolved_out,
+            ai_model_loaded=ai_model_loaded_out
         )
 
     except Exception as e:
