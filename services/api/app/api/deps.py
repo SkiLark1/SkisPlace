@@ -1,14 +1,15 @@
-from typing import Generator, Optional
+import uuid
+from typing import Optional
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import jwt, JWTError
+from jose import JWTError, jwt
 from pydantic import ValidationError
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import get_db
 from app.core.config import settings
-from app.core import security
+from app.db.session import get_db
 from app.models.user import User
 
 reusable_oauth2 = OAuth2PasswordBearer(
@@ -30,7 +31,14 @@ async def get_current_user(
             detail="Could not validate credentials",
         )
     
-    result = await db.execute(select(User).where(User.id == token_data))
+    try:
+        user_uuid = uuid.UUID(token_data)
+    except ValueError:
+         raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid user ID in token",
+        )
+    result = await db.execute(select(User).where(User.id == user_uuid))
     user = result.scalar_one_or_none()
     
     if not user:
@@ -55,9 +63,11 @@ def get_current_active_superuser(
 # --- Public API Deps ---
 
 from fastapi import Header, Request
-from app.models.project import ApiKey, Project, ProjectDomain
-from app.core.security import hash_api_key
 from sqlalchemy.orm import selectinload
+
+from app.core.security import hash_api_key
+from app.models.project import ApiKey, Project
+
 
 async def get_project_from_api_key(
     request: Request,
