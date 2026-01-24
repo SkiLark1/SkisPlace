@@ -374,7 +374,7 @@ async function initWidget() {
           <div class="sp-img-display" id="sp-img-container">
             <div class="sp-img-stage" id="sp-img-stage">
               <img src="${state.resultUrl}" class="sp-main-img" id="sp-result-img" />
-              ${state.maskUrl ? `<img src="${state.maskUrl}" class="sp-mask-image-overlay" id="sp-mask-overlay" style="display:none; opacity: 0.5;" />` : ''}
+              ${state.maskUrl ? `<img src="${state.maskUrl}" class="sp-mask-overlay" id="sp-mask-overlay" style="display:none; opacity: 0.5;" />` : ''}
             </div>
           </div>
 

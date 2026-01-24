@@ -563,7 +563,7 @@ input[type="file"] {
   /* For img overlays */
 }
 
-.sp-mask-image-overlay {
+.sp-mask-overlay {
   position: absolute;
   top: 0;
   left: 0;
