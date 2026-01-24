@@ -245,40 +245,91 @@ class FloorSegmenter:
                     floor_prob += probs[idx]
             
             # 4. THRESHOLD AT MODEL RESOLUTION (512x512)
-            # Mission 29: Dual Threshold Logic ("Confidence Edge")
+            # Mission 12 & 29: Geometry-Aware Logic
+            
+            # Determine Geometry Settings
+            # default to eye_level unless top_down explicitly stated
+            is_eye_level = (geometry_hint != "top_down") 
+            
+            # Env var overrides
+            default_grow = 7 if is_eye_level else 10 # Reduced from 15
+            iter_core_grow = int(os.getenv("AI_CORE_GROW_EYE" if is_eye_level else "AI_CORE_GROW_TOP", str(default_grow)))
+            
+            default_final_dilate = 1 if is_eye_level else 2 # Reduced from 2 for eye-level
+            iter_final_dilate = int(os.getenv("AI_FINAL_DILATE_EYE" if is_eye_level else "AI_FINAL_DILATE_TOP", str(default_final_dilate)))
+
             # a. Core Mask (High Confidence)
             thresh_core = threshold
             mask_core = (floor_prob >= thresh_core)
             
             # b. Soft Mask (Low Confidence - for expansion)
-            thresh_edge = threshold * 0.6 # e.g. 0.3 if thresh=0.5
+            thresh_edge = threshold * 0.6 
             mask_soft = (floor_prob >= thresh_edge)
             
             # c. Grow Core into Soft
-            # Dilate core to find adjacent candidates
             from scipy import ndimage
-            structure_growth = ndimage.generate_binary_structure(2, 2) # Connectivity 2 (8-neighbors)
-            # Dilate core by ~15 pixels (at 512px) to jump gaps to shadows
-            mask_core_grown = ndimage.binary_dilation(mask_core, structure=structure_growth, iterations=15)
+            structure_growth = ndimage.generate_binary_structure(2, 2) 
+            # Use geometry-aware iteration count
+            mask_core_grown = ndimage.binary_dilation(mask_core, structure=structure_growth, iterations=iter_core_grow)
             
             # Final = Core OR (Soft AND Grown)
-            # We keep everything in Core.
-            # We add pixels from Soft Mask ONLY if they are near the Core.
             binary_bool = mask_core | (mask_soft & mask_core_grown)
             
-            # 5. Optional morphology cleanup (at model resolution)
+            # 5. Morphology Cleanup
             if morphology_cleanup:
-                # Remove small islands (opening = erode then dilate)
                 structure = ndimage.generate_binary_structure(2, 1)
                 binary_bool = ndimage.binary_opening(binary_bool, structure=structure, iterations=2)
-                
-                # Fill small holes (closing = dilate then erode)
                 binary_bool = ndimage.binary_closing(binary_bool, structure=structure, iterations=2)
                 
-            # Mission 28: Edge Coverage Fix
-            # Dilate final mask by small amount (3px) to ensure wall contact
-            # This fixes "1px gap" issues.
-            binary_bool = ndimage.binary_dilation(binary_bool, structure=ndimage.generate_binary_structure(2, 1), iterations=2)
+            # --- Mission 12: Anti-Wall Filters (Bottom-Connected) ---
+            # Walls usually float or are separated by baseboards (which are low confidence).
+            # We filter for components that touch the bottom of the image.
+            
+            labeled_array, num_features = ndimage.label(binary_bool)
+            if num_features > 0:
+                # Get labels in the last row (bottom)
+                bottom_row_labels = np.unique(labeled_array[-1, :])
+                # Remove 0 (background)
+                bottom_row_labels = bottom_row_labels[bottom_row_labels != 0]
+                
+                if len(bottom_row_labels) > 0:
+                    # Keep components that touch bottom
+                    # If multiple, we could keep all, or just largest. 
+                    # Keeping ALL bottom-touching is safer for U-shaped floors.
+                    # Create a mask where label is in bottom_row_labels
+                    mask_bottom_connected = np.isin(labeled_array, bottom_row_labels)
+                    
+                    # BUT: If we have a huge wall blob that touches bottom (unlikely), this might fail.
+                    # Let's add a "largest" check if we are in eye-level, or just trust connectivity?
+                    # Trust connectivity + filtering is best.
+                    binary_bool = mask_bottom_connected
+                else:
+                    # No component touches bottom? This is weird (maybe far away floor).
+                    # Fallback: keep largest component overall
+                    sizes = ndimage.sum(binary_bool, labeled_array, range(num_features + 1))
+                    largest_label = np.argmax(sizes[1:]) + 1
+                    binary_bool = (labeled_array == largest_label)
+            
+            # --- Mission 12: Wall Clamp Limit Calculation ---
+            # Calculate the effective "horizon" of the core mask.
+            # We want to ensure the final dilation doesn't creep up walls significantly.
+            clamp_y_limit = 0
+            if is_eye_level and np.any(binary_bool):
+                y_indices, _ = np.where(binary_bool)
+                if len(y_indices) > 0:
+                    min_y = np.min(y_indices)
+                    # Allow a small margin (e.g. 5px) above the current top for regular feathering
+                    # but prevent massive jumps.
+                    clamp_y_limit = max(0, min_y - 5)
+
+            # Mission 28/12: Dilate Final
+            if iter_final_dilate > 0:
+                binary_bool = ndimage.binary_dilation(binary_bool, structure=ndimage.generate_binary_structure(2, 1), iterations=iter_final_dilate)
+            
+            # --- Mission 12: Enforce Wall Clamp ---
+            if is_eye_level and clamp_y_limit > 0:
+                # Zero out anything above the limit
+                binary_bool[:clamp_y_limit, :] = False
                 
             binary_mask = binary_bool.astype(np.uint8) * 255
             
