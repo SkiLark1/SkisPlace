@@ -312,6 +312,12 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                 geometry_hint = result_info.get("camera_geometry", "unknown")
                 prob_map = FloorSegmenter.instance().get_probability_map(original, geometry_hint=geometry_hint)
                 if prob_map:
+                    # Convert to LA (Luminance-Alpha) so browser uses Alpha for masking
+                    # L=255 (White), A=prob_map (Mask Value)
+                    if prob_map.mode == "L":
+                         white_layer = Image.new("L", prob_map.size, 255)
+                         prob_map = Image.merge("LA", (white_layer, prob_map))
+                    
                     probmap_filename = f"probmap_{uuid.uuid4()}.png"
                     probmap_path = os.path.join(os.path.dirname(output_path), probmap_filename)
                     prob_map.save(probmap_path)
