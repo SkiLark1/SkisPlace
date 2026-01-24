@@ -563,21 +563,16 @@ input[type="file"] {
   /* For img overlays */
 }
 
-.sp-mask-tint {
+.sp-mask-image-overlay {
   position: absolute;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(255, 50, 50, 0.6);
+  object-fit: contain;
   pointer-events: none;
-  /* CSS Mask - white areas of mask are visible, black areas hidden */
-  mask-size: contain;
-  mask-position: center;
-  mask-repeat: no-repeat;
-  -webkit-mask-size: contain;
-  -webkit-mask-position: center;
-  -webkit-mask-repeat: no-repeat;
+  mix-blend-mode: normal;
+  z-index: 10;
 }
 
 .sp-mask-canvas {

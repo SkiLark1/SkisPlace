@@ -374,7 +374,7 @@ async function initWidget() {
           <div class="sp-img-display" id="sp-img-container">
             <div class="sp-img-stage" id="sp-img-stage">
               <img src="${state.resultUrl}" class="sp-main-img" id="sp-result-img" />
-              ${state.maskUrl ? `<div class="sp-mask-tint" id="sp-mask-tint" style="display:none; opacity: 0.5; -webkit-mask-image: url('${state.maskUrl}'); mask-image: url('${state.maskUrl}');"></div>` : ''}
+              ${state.maskUrl ? `<img src="${state.maskUrl}" class="sp-mask-image-overlay" id="sp-mask-overlay" style="display:none; opacity: 0.5;" />` : ''}
             </div>
           </div>
 
@@ -443,7 +443,7 @@ async function initWidget() {
 
       // Toggle Logic
       const imgEl = content.querySelector('#sp-result-img') as HTMLImageElement;
-      const maskTint = content.querySelector('#sp-mask-tint') as HTMLDivElement | null;
+      const maskOverlay = content.querySelector('#sp-mask-overlay') as HTMLImageElement | null;
       const btns = content.querySelectorAll('.sp-toggle-btn');
       btns.forEach(btn => {
         (btn as HTMLButtonElement).onclick = () => {
@@ -452,16 +452,16 @@ async function initWidget() {
           const view = (btn as HTMLButtonElement).dataset.view;
           if (view === 'original') {
             imgEl.src = state.uploadedImageUrl!;
-            if (maskTint) maskTint.style.display = 'none';
+            if (maskOverlay) maskOverlay.style.display = 'none';
           } else if (view === 'mask') {
             imgEl.src = state.maskUrl!;
-            if (maskTint) maskTint.style.display = 'none';
+            if (maskOverlay) maskOverlay.style.display = 'none';
           } else if (view === 'overlay') {
             imgEl.src = state.uploadedImageUrl!;
-            if (maskTint) maskTint.style.display = 'block';
+            if (maskOverlay) maskOverlay.style.display = 'block';
           } else {
             imgEl.src = state.resultUrl!;
-            if (maskTint) maskTint.style.display = 'none';
+            if (maskOverlay) maskOverlay.style.display = 'none';
           }
         };
       });
@@ -470,10 +470,10 @@ async function initWidget() {
       if (debugMode && state.maskUrl) {
         const opacitySlider = content.querySelector('#sp-mask-opacity') as HTMLInputElement;
         const opacityVal = content.querySelector('#sp-opacity-val');
-        if (opacitySlider && maskTint) {
+        if (opacitySlider && maskOverlay) {
           opacitySlider.oninput = () => {
             const val = parseFloat(opacitySlider.value);
-            maskTint.style.opacity = val.toString();
+            maskOverlay.style.opacity = val.toString();
             if (opacityVal) opacityVal.textContent = (val * 100).toFixed(0) + '%';
           };
         }
