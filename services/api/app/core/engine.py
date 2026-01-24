@@ -241,38 +241,41 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
         mask = ImageChops.multiply(mask, h_mask)
 
     # Mission 28/Change 3A: Morphological Improvements & Clean Edges
-    # We always apply this to clean up the mask, especially for AI or User masks.
+    # We always apply this to clean up the mask, especially for User masks.
+    # HEURISTIC masks need more help. AI masks should be treated gently.
     if mask is not None:
         mask_np = np.array(mask)
+        mask_src = result_info.get("mask_source", "heuristic")
         
-        # 1. Close (Fill pinholes)
-        # 5x5 kernel is robust enough for small holes
+        # 1. Close (Fill pinholes) - Safe for all
         kernel_close = np.ones((5,5), np.uint8)
         mask_np = cv2.morphologyEx(mask_np, cv2.MORPH_CLOSE, kernel_close)
         
         # 2. Dilate (Expand edges)
-        # Push into the wall/corners by a few pixels
-        dilate_px = max(2, int(width * 0.003)) # 0.3% of width (e.g. 3px for 1000w)
-        kernel_dilate = np.ones((dilate_px, dilate_px), np.uint8)
-        mask_np = cv2.dilate(mask_np, kernel_dilate, iterations=1)
+        # Patch C: Only do heavy dilation for heuristic. 
+        # AI masks are already geometry-aware (Mission 12) so we don't want to over-expand.
+        if mask_src == "heuristic":
+            dilate_px = max(2, int(width * 0.003)) # 0.3% of width
+            kernel_dilate = np.ones((dilate_px, dilate_px), np.uint8)
+            mask_np = cv2.dilate(mask_np, kernel_dilate, iterations=1)
+        elif mask_src == "ai":
+            # Very slight dilation just to smooth edges (1px)
+            # kernel_dilate = np.ones((1, 1), np.uint8) # no-op
+            # actually skip dilation or do minimal?
+            # User suggested: "close only... no dilate (or 1px)"
+            # Let's do 0.
+            pass
         
         # Change 3B: Wall Guardrail (Horizon Cutoff)
         # Prevent mask from bleeding "up" onto the wall.
-        # Use detected horizon if available.
-        h_pct = result_info.get("camera_geometry_horizon", horizon_pct) # Use local or stored?
-        # horizon_pct was computed earlier
+        h_pct = result_info.get("camera_geometry_horizon", horizon_pct) 
         
-        if h_pct > 0 and h_pct < 0.9: # Valid horizon
-            # Cutoff anything above horizon
-            # Use a tiny margin (e.g. 5px or 1%) ABOVE horizon?
-            # User said: "Remove any mask pixels above a 'horizon line'".
-            # Let's start strictly at the horizon line.
-            # Horizon is y = height * h_pct.
+        horizon_cutoff_y = None # Store for re-application
+        if h_pct > 0 and h_pct < 0.9: 
             cutoff_y = int(height * h_pct)
-            
-            # Zero out rows 0 to cutoff_y
             if cutoff_y > 0:
                 mask_np[0:cutoff_y, :] = 0
+                horizon_cutoff_y = cutoff_y
                 print(f"DEBUG: Applied Horizon Cutoff at Y={cutoff_y}")
         
         mask = Image.fromarray(mask_np)
@@ -285,6 +288,32 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
 
 
     mask = mask.filter(ImageFilter.GaussianBlur(radius=mask_blur))
+    
+    # Patch A: Re-apply Horizon Cutoff logic AFTER blurs (Part 2)
+    # The 'horizon_cutoff_y' variable must be available from the previous scope.
+    # Note: replace_file_content chunks are separate, but python scope is function-wide.
+    # However, I need to ensure the variable is defined even if the previous block (mask is not None) was skipped?
+    # Actually mask is None -> fallback was handled. But if mask was None initially, 'horizon_cutoff_y' wouldn't result in errors because mask would stay None?
+    # Wait, 'process_image' flow ensures 'mask' is eventually set or we fallback.
+    # But 'mask' is set by AI or Heuristic before the previous block.
+    # So 'horizon_cutoff_y' will be defined if I define it in the replacement above.
+    # But if I replaced lines 243-279, I defined it inside 'if mask is not None'.
+    # If mask IS None (impossible after Step 2), it's fine.
+    # BUT, 'horizon_cutoff_y' might not be in scope if 'mask is not None' isn't entered?
+    # Mask is initialized to heuristic or AI. It is NEVER None here.
+    # BUT python static analysis might complain if I use it and it wasn't init.
+    # I'll rely on it being set in the previous block or use a safe check if possible.
+    # To be safe, I should initialize `horizon_cutoff_y = None` at top of function? Too much editing.
+    # I'll assume standard execution flow.
+    
+    # Wait, 'horizon_cutoff_y' needs to be local.
+    # I will rely on the previous block defining it.
+    
+    if locals().get("horizon_cutoff_y") and horizon_cutoff_y is not None and horizon_cutoff_y > 0:
+        m = np.array(mask)
+        m[0:horizon_cutoff_y, :] = 0
+        mask = Image.fromarray(m)
+        print(f"DEBUG: Re-applied Horizon Cutoff post-blur at Y={horizon_cutoff_y}")
     
     # E. Compute Mask Stats (always, for debugging)
     # import numpy as np (Removed global shadow)
@@ -312,8 +341,12 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                 geometry_hint = result_info.get("camera_geometry", "unknown")
                 prob_map = FloorSegmenter.instance().get_probability_map(original, geometry_hint=geometry_hint)
                 if prob_map:
-                    # Convert to LA (Luminance-Alpha) so browser uses Alpha for masking
-                    # L=255 (White), A=prob_map (Mask Value)
+                    # Patch B: Save a VIEWABLE grayscale probmap
+                    prob_vis = prob_map.convert("L")
+                    probmap_vis_filename = f"probmap_vis_{uuid.uuid4()}.png"
+                    prob_vis.save(os.path.join(os.path.dirname(output_path), probmap_vis_filename))
+                    
+                    # Keep existing LA version for browser
                     if prob_map.mode == "L":
                          white_layer = Image.new("L", prob_map.size, 255)
                          prob_map = Image.merge("LA", (white_layer, prob_map))
@@ -321,8 +354,10 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
                     probmap_filename = f"probmap_{uuid.uuid4()}.png"
                     probmap_path = os.path.join(os.path.dirname(output_path), probmap_filename)
                     prob_map.save(probmap_path)
+                    
                     result_info["probmap_filename"] = probmap_filename
-                    print(f"DEBUG: Saved probability map: {probmap_filename}")
+                    result_info["probmap_vis_filename"] = probmap_vis_filename
+                    print(f"DEBUG: Saved probability maps: {probmap_filename} (LA), {probmap_vis_filename} (L)")
         except Exception as e:
             print(f"Failed to save debug assets: {e}")
 
