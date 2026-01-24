@@ -1,21 +1,52 @@
-import shutil
 import os
+import shutil
 import uuid
-from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from starlette.concurrency import run_in_threadpool
 
 from app.api import deps
-from app.models import Asset, User, Project
-from app.db.session import AsyncSessionLocal
+from app.models import Asset, Project, User
 
 router = APIRouter()
 
 UPLOAD_DIR = "/app/static/uploads"
 # Ensure exists
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+def process_and_save_file(file_obj, file_path: str, filename: str):
+    """
+    Synchronous helper to save file and process it (CPU bound).
+    """
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file_obj, buffer)
+
+    # MISSION 20: Seamless Tile Conversion
+    # Automatically convert to 2x2 mirror tile
+    try:
+        from PIL import Image, ImageOps
+        img = Image.open(file_path).convert("RGBA")
+        w, h = img.size
+        if w > 0 and h > 0:
+            canvas = Image.new("RGBA", (w * 2, h * 2))
+            # TL: Orig
+            canvas.paste(img, (0, 0))
+            # TR: Mirror X
+            mx = ImageOps.mirror(img)
+            canvas.paste(mx, (w, 0))
+            # BL: Mirror Y
+            my = ImageOps.flip(img)
+            canvas.paste(my, (0, h))
+            # BR: Mirror XY
+            mxy = ImageOps.flip(mx)
+            canvas.paste(mxy, (w, h))
+
+            canvas.save(file_path)
+            print(f"DEBUG: Converted {filename} to seamless tile")
+    except Exception as se:
+        print(f"WARN: Seamless conversion failed: {se}")
 
 @router.post("/upload", response_model=dict)
 async def upload_asset(
@@ -45,34 +76,10 @@ async def upload_asset(
     
     # 3. Save File
     try:
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        # MISSION 20: Seamless Tile Conversion
-        # Automatically convert to 2x2 mirror tile
-        try:
-            from PIL import Image, ImageOps
-            img = Image.open(file_path).convert("RGBA")
-            w, h = img.size
-            if w > 0 and h > 0:
-                canvas = Image.new("RGBA", (w * 2, h * 2))
-                # TL: Orig
-                canvas.paste(img, (0, 0))
-                # TR: Mirror X
-                mx = ImageOps.mirror(img)
-                canvas.paste(mx, (w, 0))
-                # BL: Mirror Y
-                my = ImageOps.flip(img)
-                canvas.paste(my, (0, h))
-                # BR: Mirror XY
-                mxy = ImageOps.flip(mx)
-                canvas.paste(mxy, (w, h))
-                
-                canvas.save(file_path)
-                print(f"DEBUG: Converted {file.filename} to seamless tile")
-        except Exception as se:
-            print(f"WARN: Seamless conversion failed: {se}")
-
+        # Offload blocking file I/O and image processing to threadpool
+        await run_in_threadpool(
+            process_and_save_file, file.file, file_path, file.filename
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not save file: {e}")
         
