@@ -59,6 +59,7 @@ def process_image(input_path: str, output_path: str, parameters: dict, debug: bo
     horizon_pct = geometry_res["horizon"]
     
     result_info["camera_geometry"] = geometry_type
+    result_info["camera_geometry_horizon"] = horizon_pct
     print(f"DEBUG: Detected Camera Geometry: {geometry_type} (Horizon: {horizon_pct:.2f})")
     
 
