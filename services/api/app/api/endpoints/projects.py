@@ -129,9 +129,6 @@ async def update_project(
     db.add(project)
     await db.commit()
     await db.refresh(project)
-    db.add(project)
-    await db.commit()
-    await db.refresh(project)
     return project
 
 from datetime import datetime, timedelta
