@@ -1,20 +1,25 @@
-from sqlalchemy import String, ForeignKey, Boolean, JSON, DateTime
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 import uuid
 from datetime import datetime
+
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from ..db.base import Base
+
 
 class Project(Base):
     __tablename__ = "projects"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clients.id"))
+    client_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("clients.id"), index=True)
     name: Mapped[str] = mapped_column(String)
     slug: Mapped[str] = mapped_column(String)
     config: Mapped[dict] = mapped_column(JSON, default={})
     
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
     client = relationship("Client", back_populates="projects")
     domains = relationship("ProjectDomain", back_populates="project")
